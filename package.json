@@ -11,7 +11,8 @@
     "prisma:migrate": "prisma migrate dev",
     "desktop:dev": "node scripts/desktop-dev.cjs",
     "desktop:build": "next build",
-    "desktop:package": "electron-builder --win nsis portable --publish never"
+    "desktop:package": "electron-builder --win nsis portable --publish never",
+    "desktop:prepare": "node scripts/prepare-desktop.cjs"
   },
   "dependencies": {
     "@prisma/client": "^6.16.0",
