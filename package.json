@@ -50,7 +50,12 @@
       "node_modules/.prisma/**/*",
       "node_modules/@prisma/client/**/*"
     ],
-    "extraResources": [],
+    "extraResources": [
+      {
+        "from": "node_modules/.prisma",
+        "to": "app/node_modules/.prisma"
+      }
+    ],
     "win": {
       "target": [
         {
