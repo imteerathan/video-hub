@@ -78,6 +78,17 @@ jobs:
           & $installed --smoke-test-ui 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { throw "Installed app UI smoke test failed with exit code $LASTEXITCODE" }
           Write-Host "Installed app UI smoke test passed."
+      - name: Upload installed startup logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-hub-startup-logs
+          path: |
+            $env:LOCALAPPDATA\Video Hub\logs\*.log
+            $env:APPDATA\Video Hub\logs\*.log
+            $env:LOCALAPPDATA\video-hub-installed-smoke-test.log
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
