@@ -3,9 +3,9 @@ name: Windows Desktop Build
 on:
   push:
     branches: [main]
-  workflow_dispatch:
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,7 +13,7 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,27 +34,50 @@ jobs:
       - name: Build Next.js
         run: npm run build
 
-      - name: Desktop smoke test
+      - name: Desktop smoke test (Electron + local server + SQLite)
         shell: pwsh
         run: npx electron desktop/main.cjs --smoke-test
 
-      - name: Package Windows app
-        run: npx electron-builder --win nsis portable --publish never
+      - name: Package Windows installer
+        run: npx electron-builder --win nsis --publish never
 
-      - name: Verify release artifacts
+      - name: Verify installer
         shell: pwsh
         run: |
-          $installer = Get-ChildItem release -Filter "*Setup*.exe" -File
-          $portable = Get-ChildItem release -Filter "*.exe" -File | Where-Object { $_.Name -notlike "*Setup*" }
-          if ($installer.Count -lt 1) { throw "NSIS installer was not generated" }
-          if ($portable.Count -lt 1) { throw "Portable executable was not generated" }
-          $installer | Select-Object Name, Length
-          $portable | Select-Object Name, Length
+          $installer = Get-ChildItem release -Filter "*Setup*.exe" -File | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer was not generated" }
+          if ($installer.Length -lt 10000000) { throw "Installer size looks invalid" }
+          Write-Host "Installer: $($installer.FullName)"
+          Write-Host "Size: $($installer.Length) bytes"
 
-      - name: Upload Windows artifacts
+      - name: Install packaged app silently
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem release -Filter "*Setup*.exe" -File | Select-Object -First 1
+          Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait -NoNewWindow
+          $installed = Join-Path $env:LOCALAPPDATA "Programs\Video Hub\Video Hub.exe"
+          if (-not (Test-Path $installed)) {
+            $matches = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Filter "Video Hub.exe" -File -Recurse -ErrorAction SilentlyContinue
+            if ($matches) { $installed = $matches[0].FullName }
+          }
+          if (-not (Test-Path $installed)) { throw "Installed Video Hub.exe was not found" }
+          Write-Host "Installed app: $installed"
+
+      - name: Installed app smoke test
+        shell: pwsh
+        run: |
+          $installed = Join-Path $env:LOCALAPPDATA "Programs\Video Hub\Video Hub.exe"
+          if (-not (Test-Path $installed)) {
+            $matches = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Filter "Video Hub.exe" -File -Recurse -ErrorAction SilentlyContinue
+            if ($matches) { $installed = $matches[0].FullName }
+          }
+          & $installed --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "Installed app smoke test failed with exit code $LASTEXITCODE" }
+
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: video-hub-windows
-          path: release/*.exe
+          name: video-hub-windows-installer
+          path: release/*Setup*.exe
           if-no-files-found: error
           retention-days: 14
