@@ -319,7 +319,10 @@ async function loadAppPage({ validateUi = true } = {}) {
   if (validateUi) {
     const bodyText = await window.webContents.executeJavaScript('document.body ? document.body.innerText.slice(0, 5000) : ""', true);
     if (!bodyText || bodyText.trim().length < 10) throw new Error('Renderer loaded an empty page');
-    log('[renderer] UI loaded', bodyText.slice(0, 120).replace(/\s+/g, ' '));
+    const styleState = await window.webContents.executeJavaScript('JSON.stringify({styleSheets:document.styleSheets.length,bodyFont:getComputedStyle(document.body).fontFamily,bodyBg:getComputedStyle(document.body).backgroundColor})', true);
+    log('[renderer] UI loaded', bodyText.slice(0, 120).replace(/\s+/g, ' '), '[styles]', styleState);
+    const styles = JSON.parse(styleState || '{}');
+    if (!styles.styleSheets || styles.styleSheets < 1) throw new Error('Renderer loaded without any stylesheet. Next static CSS assets may be missing.');
   }
 }
 
