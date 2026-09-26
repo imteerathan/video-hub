@@ -34,6 +34,9 @@ jobs:
       - name: Build Next.js
         run: npm run build
 
+      - name: Prepare Prisma artifacts for standalone runtime
+        run: npm run desktop:prepare
+
       - name: Desktop smoke test (Electron + local server + SQLite)
         shell: pwsh
         run: npx electron desktop/main.cjs --smoke-test
@@ -71,7 +74,8 @@ jobs:
             $matches = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Filter "Video Hub.exe" -File -Recurse -ErrorAction SilentlyContinue
             if ($matches) { $installed = $matches[0].FullName }
           }
-          & $installed --smoke-test
+          $log = Join-Path $env:LOCALAPPDATA "video-hub-installed-smoke-test.log"
+          & $installed --smoke-test 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { throw "Installed app smoke test failed with exit code $LASTEXITCODE" }
 
       - name: Upload Windows installer
