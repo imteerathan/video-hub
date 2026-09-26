@@ -232,6 +232,34 @@ async function createWindow({ validateUi = true } = {}) {
     return { action: 'deny' };
   });
 
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (isMainFrame) log('[renderer] did-fail-load', errorCode, errorDescription, validatedURL);
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    log('[renderer] render-process-gone', JSON.stringify(details));
+  });
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (level >= 2) log('[renderer-console]', message, `at ${sourceId}:${line}`);
+  });
+
+  await mainWindow.loadURL(`http://127.0.0.1:${PORT}/`);
+
+  if (validateUi) {
+    const bodyText = await mainWindow.webContents.executeJavaScript(
+      'document.body ? document.body.innerText.slice(0, 5000) : ""',
+      true
+    );
+    if (!bodyText || bodyText.trim().length < 10) {
+      throw new Error('Renderer loaded an empty page');
+    }
+    log('[renderer] UI loaded', bodyText.slice(0, 120).replace(/\s+/g, ' '));
+  }
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
