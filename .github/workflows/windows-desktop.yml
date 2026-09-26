@@ -78,15 +78,30 @@ jobs:
           & $installed --smoke-test-ui 2>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { throw "Installed app UI smoke test failed with exit code $LASTEXITCODE" }
           Write-Host "Installed app UI smoke test passed."
+      - name: Collect installed startup logs
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force diagnostics | Out-Null
+          $paths = @(
+            (Join-Path $env:LOCALAPPDATA "Video Hub\logs"),
+            (Join-Path $env:APPDATA "Video Hub\logs"),
+            $env:LOCALAPPDATA
+          )
+          foreach ($dir in $paths) {
+            if (Test-Path $dir) {
+              Get-ChildItem $dir -Filter "*.log" -File -ErrorAction SilentlyContinue | ForEach-Object {
+                Copy-Item $_.FullName diagnostics -Force
+              }
+            }
+          }
+
       - name: Upload installed startup logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: video-hub-startup-logs
-          path: |
-            $env:LOCALAPPDATA\Video Hub\logs\*.log
-            $env:APPDATA\Video Hub\logs\*.log
-            $env:LOCALAPPDATA\video-hub-installed-smoke-test.log
+          path: diagnostics/*
           if-no-files-found: ignore
           retention-days: 14
 
