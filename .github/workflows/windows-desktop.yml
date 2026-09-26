@@ -36,9 +36,7 @@ jobs:
 
       - name: Desktop smoke test
         shell: pwsh
-        run: |
-          $env:ELECTRON_RUN_AS_NODE = "1"
-          npx electron desktop/main.cjs --smoke-test
+        run: npx electron desktop/main.cjs --smoke-test
 
       - name: Package Windows app
         run: npx electron-builder --win nsis portable --publish never
