@@ -49,11 +49,13 @@ async function choosePort() {
   });
 }
 
-function waitForServer(url, timeoutMs = 30000) {
+function waitForServer(url, timeoutMs = 60000) {
   const started = Date.now();
   return new Promise((resolve, reject) => {
     const retry = () => {
-      if (Date.now() - started > timeoutMs) return reject(new Error(`Video Hub server did not start in time: ${url}`));
+      if (Date.now() - started > timeoutMs) {
+        return reject(new Error(`Video Hub server did not start in time: ${url}`));
+      }
       setTimeout(probe, 250);
     };
     const probe = () => {
@@ -77,14 +79,28 @@ function runDatabaseBootstrap() {
   const env = { ...process.env, DATABASE_URL: `file:${dbPath}`, ELECTRON_RUN_AS_NODE: '1' };
   const prismaCli = path.join(root, 'node_modules', 'prisma', 'build', 'index.js');
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [prismaCli, 'db', 'push', '--schema', path.join(root, 'prisma', 'schema.prisma'), '--skip-generate'], {
-      cwd: root, env, stdio: 'pipe', windowsHide: true,
+    const child = spawn(process.execPath, [
+      prismaCli, 'db', 'push',
+      '--schema', path.join(root, 'prisma', 'schema.prisma'),
+      '--skip-generate'
+    ], {
+      cwd: root,
+      env,
+      stdio: 'pipe',
+      windowsHide: true,
     });
     let stderr = '';
-    child.stderr.on('data', d => { stderr += d.toString(); log('[prisma:err]', d.toString().trim()); });
+    child.stderr.on('data', d => {
+      stderr += d.toString();
+      log('[prisma:err]', d.toString().trim());
+    });
     child.stdout.on('data', d => log('[prisma]', d.toString().trim()));
     child.on('error', reject);
-    child.on('exit', code => code === 0 ? resolve() : reject(new Error(`Prisma database bootstrap failed (${code}): ${stderr}`)));
+    child.on('exit', code => {
+      code === 0
+        ? resolve()
+        : reject(new Error(`Prisma database bootstrap failed (${code}): ${stderr}`));
+    });
   });
 }
 
@@ -102,7 +118,13 @@ function startServer() {
 
   serverRoot = root;
   const server = path.join(root, '.next', 'standalone', 'server.js');
-  serverProcess = spawn(process.execPath, [server], { cwd: root, env, stdio: 'pipe', windowsHide: true });
+  serverProcess = spawn(process.execPath, [server], {
+    cwd: root,
+    env,
+    stdio: 'pipe',
+    windowsHide: true,
+  });
+
   serverProcess.on('error', err => log('[video-hub] server error', err.message));
   serverProcess.on('exit', (code, signal) => log('[video-hub] server exited', code, signal || ''));
   serverProcess.stdout?.on('data', data => log('[next]', data.toString().trim()));
@@ -122,7 +144,9 @@ function httpGet(url, timeoutMs = 10000) {
       res.setEncoding('utf8');
       res.on('data', c => {
         body += c;
-        if (body.length > 1024 * 1024) req.destroy(new Error('Response too large'));
+        if (body.length > 1024 * 1024) {
+          req.destroy(new Error('Response too large'));
+        }
       });
       res.on('end', () => resolve({ statusCode: res.statusCode || 0, body }));
     });
@@ -141,6 +165,77 @@ async function runSmokeTest() {
     throw new Error(`Home page check failed: HTTP ${home.statusCode}`);
   }
   log('HTTP smoke test passed');
+}
+
+function startupLoadingHtml() {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Video Hub</title>
+  <style>
+    body{margin:0;background:#08090b;color:#f5f6f8;font-family:Segoe UI,system-ui,sans-serif;display:grid;place-items:center;height:100vh}
+    main{text-align:center;min-width:360px;padding:32px}
+    .logo{font-size:34px;font-weight:800;letter-spacing:.14em;margin-bottom:18px}
+    .spinner{width:34px;height:34px;border:3px solid #2b2f39;border-top-color:#f5f6f8;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 18px}
+    h1{font-size:19px;margin:0 0 8px}
+    p{margin:0;color:#9ea4b1;line-height:1.5}
+    @keyframes spin{to{transform:rotate(360deg)}}
+  </style></head><body><main>
+    <div class="logo">VIDEO HUB</div>
+    <div class="spinner"></div>
+    <h1 id="status">Starting Video Hub...</h1>
+    <p id="detail">Preparing local database and media service.</p>
+  </main>
+  <script>
+    window.__videoHubSetStatus = function(message, detail) {
+      document.getElementById('status').textContent = message || '';
+      document.getElementById('detail').textContent = detail || '';
+    };
+  </script></body></html>`;
+}
+
+async function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 1000,
+    minHeight: 700,
+    backgroundColor: '#0b0b0f',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (isMainFrame) log('[renderer] did-fail-load', errorCode, errorDescription, validatedURL);
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    log('[renderer] render-process-gone', JSON.stringify(details));
+  });
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (level >= 2) log('[renderer-console]', message, `at ${sourceId}:${line}`);
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  mainWindow.on('closed', () => { mainWindow = null; });
+  await mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(startupLoadingHtml()));
+}
+
+async function setStartupStatus(message, detail) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    await mainWindow.webContents.executeJavaScript(
+      `window.__videoHubSetStatus(${JSON.stringify(message)}, ${JSON.stringify(detail || '')})`,
+      true
+    );
+  } catch (err) {
+    log('[startup-status]', err?.message || err);
+  }
 }
 
 function startupErrorHtml(errorMessage) {
@@ -165,19 +260,10 @@ function startupErrorHtml(errorMessage) {
 
 async function showStartupError(error) {
   if (!mainWindow || mainWindow.isDestroyed()) {
-    mainWindow = new BrowserWindow({
-      width: 980,
-      height: 680,
-      minWidth: 720,
-      minHeight: 520,
-      backgroundColor: '#08090b',
-      autoHideMenuBar: true,
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-      },
-    });
+    try { await createWindow(); } catch (windowError) {
+      log('[startup-error-window-failed]', windowError?.stack || windowError);
+      return;
+    }
   }
   try {
     await mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(startupErrorHtml(error)));
@@ -186,34 +272,10 @@ async function showStartupError(error) {
   }
 }
 
-async function createWindow({ validateUi = true } = {}) {
-  mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1000,
-    minHeight: 700,
-    backgroundColor: '#0b0b0f',
-    autoHideMenuBar: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-
-  await waitForServer(`http://127.0.0.1:${PORT}/api/health`);
-
-  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-    if (isMainFrame) log('[renderer] did-fail-load', errorCode, errorDescription, validatedURL);
-  });
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    log('[renderer] render-process-gone', JSON.stringify(details));
-  });
-  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-    if (level >= 2) log('[renderer-console]', message, `at ${sourceId}:${line}`);
-  });
-
+async function loadAppPage({ validateUi = true } = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) await createWindow();
+  await setStartupStatus('Loading Video Hub...', `Connecting to local service on port ${PORT}.`);
+  await waitForServer(`http://127.0.0.1:${PORT}/api/health`, 60000);
   await mainWindow.loadURL(`http://127.0.0.1:${PORT}/`);
 
   if (validateUi) {
@@ -226,13 +288,6 @@ async function createWindow({ validateUi = true } = {}) {
     }
     log('[renderer] UI loaded', bodyText.slice(0, 120).replace(/\s+/g, ' '));
   }
-
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
-    return { action: 'deny' };
-  });
-
-  mainWindow.on('closed', () => { mainWindow = null; });
 }
 
 const gotLock = app.requestSingleInstanceLock();
@@ -250,15 +305,24 @@ if (!gotLock) {
   process.on('unhandledRejection', err => log('[unhandledRejection]', err?.stack || err));
 
   app.whenReady().then(async () => {
+    const smokeHttp = process.argv.includes('--smoke-test');
+    const smokeUi = process.argv.includes('--smoke-test-ui');
     try {
       session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
       fs.mkdirSync(app.getPath('userData'), { recursive: true });
+
+      if (!smokeHttp) {
+        await createWindow();
+        await setStartupStatus('Starting Video Hub...', 'Preparing the local database.');
+      }
+
       await runDatabaseBootstrap();
+      await setStartupStatus('Starting media service...', 'Launching the local Video Hub server.');
       PORT = await choosePort();
       startServer();
-      await waitForServer(`http://127.0.0.1:${PORT}/api/health`);
 
-      if (process.argv.includes('--smoke-test')) {
+      if (smokeHttp) {
+        await waitForServer(`http://127.0.0.1:${PORT}/api/health`, 30000);
         await runSmokeTest();
         log('SMOKE TEST PASSED');
         stopServer();
@@ -266,32 +330,38 @@ if (!gotLock) {
         return;
       }
 
-      const smokeUi = process.argv.includes('--smoke-test-ui');
-      try {
-        await createWindow({ validateUi: true });
-        if (smokeUi) {
-          await new Promise(resolve => setTimeout(resolve, 350));
-          const title = await mainWindow.webContents.getTitle();
-          const bodyText = await mainWindow.webContents.executeJavaScript(
-            'document.body ? document.body.innerText.slice(0, 5000) : ""',
-            true
-          );
-          if (!bodyText || bodyText.trim().length < 10) throw new Error('UI smoke test found an empty renderer');
-          log('UI SMOKE TEST PASSED', title, bodyText.slice(0, 160).replace(/\s+/g, ' '));
-          stopServer();
-          app.quit();
-          return;
+      await setStartupStatus('Loading library...', 'Almost ready.');
+      await loadAppPage({ validateUi: true });
+
+      if (smokeUi) {
+        await new Promise(resolve => setTimeout(resolve, 350));
+        const title = await mainWindow.webContents.getTitle();
+        const bodyText = await mainWindow.webContents.executeJavaScript(
+          'document.body ? document.body.innerText.slice(0, 5000) : ""',
+          true
+        );
+        if (!bodyText || bodyText.trim().length < 10) {
+          throw new Error('UI smoke test found an empty renderer');
         }
-      } catch (err) {
-        log('[renderer-startup-failed]', err?.stack || err);
-        await showStartupError(err?.message || err);
+        log('UI SMOKE TEST PASSED', title, bodyText.slice(0, 160).replace(/\s+/g, ' '));
+        stopServer();
+        app.quit();
         return;
       }
+
       app.on('activate', async () => {
-        if (BrowserWindow.getAllWindows().length === 0) await createWindow();
+        if (BrowserWindow.getAllWindows().length === 0) {
+          await createWindow();
+          await loadAppPage({ validateUi: false });
+        }
       });
     } catch (err) {
       log('[startup-failed]', err?.stack || err);
+      if (smokeHttp || smokeUi) {
+        stopServer();
+        app.exit(1);
+        return;
+      }
       await showStartupError(err?.message || err);
     }
   });
