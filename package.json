@@ -1,0 +1,78 @@
+{
+  "name": "video-hub",
+  "version": "1.1.8-desktop",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "desktop:dev": "node scripts/desktop-dev.cjs",
+    "desktop:build": "next build",
+    "desktop:package": "electron-builder --win nsis portable --publish never"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.16.0",
+    "hls.js": "^1.6.13",
+    "next": "^15.5.3",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "prisma": "^6.16.0",
+    "typescript": "^5.9.2",
+    "electron": "^37.4.0",
+    "electron-builder": "^26.0.12"
+  },
+  "main": "desktop/main.cjs",
+  "build": {
+    "appId": "com.videohub.desktop",
+    "productName": "Video Hub",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      ".next/standalone/**/*",
+      ".next/static/**/*",
+      "public/**/*",
+      "prisma/**/*",
+      "desktop/**/*",
+      "package.json",
+      "node_modules/prisma/**/*",
+      "node_modules/@prisma/**/*",
+      "node_modules/.prisma/**/*",
+      "node_modules/@prisma/client/**/*"
+    ],
+    "extraResources": [],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "asar": false
+  }
+}

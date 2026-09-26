@@ -1,0 +1,209 @@
+const { app, BrowserWindow, session, shell } = require('electron');
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const http = require('node:http');
+const net = require('node:net');
+
+let PORT = Number(process.env.VIDEO_HUB_PORT || 3187);
+let serverProcess = null;
+let mainWindow = null;
+let serverRoot = null;
+let userData = null;
+
+function logPath() {
+  return path.join(app.getPath('userData'), 'video-hub-desktop.log');
+}
+
+function log(...args) {
+  const line = `[${new Date().toISOString()}] ${args.map(String).join(' ')}\n`;
+  try { fs.appendFileSync(logPath(), line); } catch {}
+  console.log(...args);
+}
+
+function appRoot() {
+  if (!app.isPackaged) return path.resolve(__dirname, '..');
+  return path.join(process.resourcesPath, 'app');
+}
+
+function checkPort(port) {
+  return new Promise(resolve => {
+    const srv = net.createServer();
+    srv.once('error', () => resolve(false));
+    srv.once('listening', () => srv.close(() => resolve(true)));
+    srv.listen(port, '127.0.0.1');
+  });
+}
+
+async function choosePort() {
+  const preferred = Number(process.env.VIDEO_HUB_PORT || 3187);
+  if (await checkPort(preferred)) return preferred;
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const addr = srv.address();
+      const chosen = typeof addr === 'object' && addr ? addr.port : preferred;
+      srv.close(() => resolve(chosen));
+    });
+  });
+}
+
+function waitForServer(url, timeoutMs = 30000) {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const retry = () => {
+      if (Date.now() - started > timeoutMs) return reject(new Error(`Video Hub server did not start in time: ${url}`));
+      setTimeout(probe, 250);
+    };
+    const probe = () => {
+      const req = http.get(url, res => {
+        res.resume();
+        if (res.statusCode && res.statusCode < 500) return resolve();
+        retry();
+      });
+      req.on('error', retry);
+      req.setTimeout(1000, () => req.destroy());
+    };
+    probe();
+  });
+}
+
+function runDatabaseBootstrap() {
+  const root = appRoot();
+  userData = app.getPath('userData');
+  fs.mkdirSync(userData, { recursive: true });
+  const dbPath = path.join(userData, 'video-hub.db');
+  const env = { ...process.env, DATABASE_URL: `file:${dbPath}`, ELECTRON_RUN_AS_NODE: '1' };
+  const prismaCli = path.join(root, 'node_modules', 'prisma', 'build', 'index.js');
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [prismaCli, 'db', 'push', '--schema', path.join(root, 'prisma', 'schema.prisma'), '--skip-generate'], {
+      cwd: root, env, stdio: 'pipe', windowsHide: true,
+    });
+    let stderr = '';
+    child.stderr.on('data', d => { stderr += d.toString(); log('[prisma:err]', d.toString().trim()); });
+    child.stdout.on('data', d => log('[prisma]', d.toString().trim()));
+    child.on('error', reject);
+    child.on('exit', code => code === 0 ? resolve() : reject(new Error(`Prisma database bootstrap failed (${code}): ${stderr}`)));
+  });
+}
+
+function startServer() {
+  const root = appRoot();
+  const dbPath = path.join(app.getPath('userData'), 'video-hub.db');
+  const env = {
+    ...process.env,
+    NODE_ENV: 'production',
+    PORT: String(PORT),
+    HOSTNAME: '127.0.0.1',
+    DATABASE_URL: `file:${dbPath}`,
+    ELECTRON_RUN_AS_NODE: '1',
+  };
+
+  serverRoot = root;
+  const server = path.join(root, '.next', 'standalone', 'server.js');
+  serverProcess = spawn(process.execPath, [server], { cwd: root, env, stdio: 'pipe', windowsHide: true });
+  serverProcess.on('error', err => log('[video-hub] server error', err.message));
+  serverProcess.on('exit', (code, signal) => log('[video-hub] server exited', code, signal || ''));
+  serverProcess.stdout?.on('data', data => log('[next]', data.toString().trim()));
+  serverProcess.stderr?.on('data', data => log('[next:err]', data.toString().trim()));
+}
+
+function stopServer() {
+  if (!serverProcess) return;
+  try { serverProcess.kill(); } catch {}
+  serverProcess = null;
+}
+
+function runSmokeTest() {
+  return new Promise((resolve, reject) => {
+    const req = http.get(`http://127.0.0.1:${PORT}/api/health`, res => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', c => { body += c; });
+      res.on('end', () => {
+        if (res.statusCode === 200 && body.includes('"ok":true')) resolve();
+        else reject(new Error(`Health check failed: HTTP ${res.statusCode} ${body}`));
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(5000, () => req.destroy(new Error('Health check timeout')));
+  });
+}
+
+async function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 1000,
+    minHeight: 700,
+    backgroundColor: '#0b0b0f',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  await waitForServer(`http://127.0.0.1:${PORT}/api/health`);
+  await mainWindow.loadURL(`http://127.0.0.1:${PORT}/`);
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  mainWindow.on('closed', () => { mainWindow = null; });
+}
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+
+  process.on('uncaughtException', err => log('[uncaughtException]', err.stack || err.message));
+  process.on('unhandledRejection', err => log('[unhandledRejection]', err?.stack || err));
+
+  app.whenReady().then(async () => {
+    try {
+      session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+      fs.mkdirSync(app.getPath('userData'), { recursive: true });
+      await runDatabaseBootstrap();
+      PORT = await choosePort();
+      startServer();
+      await waitForServer(`http://127.0.0.1:${PORT}/api/health`);
+
+      if (process.argv.includes('--smoke-test')) {
+        await runSmokeTest();
+        log('SMOKE TEST PASSED');
+        stopServer();
+        app.quit();
+        return;
+      }
+
+      await createWindow();
+      app.on('activate', async () => {
+        if (BrowserWindow.getAllWindows().length === 0) await createWindow();
+      });
+    } catch (err) {
+      log('[startup-failed]', err?.stack || err);
+      stopServer();
+      app.quit();
+    }
+  });
+
+  app.on('window-all-closed', () => {
+    stopServer();
+    if (process.platform !== 'darwin') app.quit();
+  });
+
+  app.on('before-quit', stopServer);
+}

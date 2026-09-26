@@ -1,0 +1,7 @@
+import { NextResponse } from 'next/server';
+import { db } from '@/lib/db';
+import { requireUser } from '@/lib/auth';
+function slugify(s:string){return s.trim().toLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu,'-').replace(/^-|-$/g,'') || 'category'}
+export async function GET(){try{const user=await requireUser();return NextResponse.json(await db.category.findMany({where:{userId:user.id},orderBy:{name:'asc'}}))}catch{return NextResponse.json({error:'Unauthorized'},{status:401})}}
+export async function POST(req:Request){try{const user=await requireUser();const b=await req.json();const name=String(b.name||'').trim();if(!name)return NextResponse.json({error:'Name required'},{status:400});let slug=slugify(name);const exists=await db.category.findFirst({where:{userId:user.id,slug}});if(exists)slug=`${slug}-${Date.now().toString(36)}`;return NextResponse.json(await db.category.create({data:{userId:user.id,name,slug}}),{status:201})}catch(e){return NextResponse.json({error:e instanceof Error?e.message:'Failed'},{status:400})}}
+export async function DELETE(req:Request){try{const user=await requireUser();const id=new URL(req.url).searchParams.get('id');if(!id)return NextResponse.json({error:'id required'},{status:400});await db.category.deleteMany({where:{id,userId:user.id}});return NextResponse.json({ok:true})}catch{return NextResponse.json({error:'Unauthorized'},{status:401})}}

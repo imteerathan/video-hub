@@ -1,0 +1,13 @@
+ALTER TABLE "Content" ADD COLUMN "originalTitle" TEXT;
+ALTER TABLE "Content" ADD COLUMN "englishTitle" TEXT;
+ALTER TABLE "Content" ADD COLUMN "thaiTitle" TEXT;
+ALTER TABLE "Content" ADD COLUMN "displayTitle" TEXT;
+ALTER TABLE "Content" ADD COLUMN "titleSource" TEXT;
+ALTER TABLE "Episode" ADD COLUMN "originalTitle" TEXT;
+ALTER TABLE "Episode" ADD COLUMN "englishTitle" TEXT;
+ALTER TABLE "Episode" ADD COLUMN "thaiTitle" TEXT;
+ALTER TABLE "Episode" ADD COLUMN "displayTitle" TEXT;
+ALTER TABLE "VideoSource" ADD COLUMN "siteName" TEXT;
+ALTER TABLE "VideoSource" ADD COLUMN "siteUrl" TEXT;
+ALTER TABLE "VideoSource" ADD COLUMN "sourceTitle" TEXT;
+CREATE INDEX "VideoSource_sourceId_siteName_idx" ON "VideoSource"("sourceId", "siteName");

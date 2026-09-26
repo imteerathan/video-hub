@@ -1,0 +1,255 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "windows"]
+}
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  passwordHash String
+  displayName  String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  sessions     Session[]
+  categories   Category[]
+  sources      Source[]
+  rules        SearchRule[]
+  contents     Content[]
+  watchHistory WatchHistory[]
+  favorites    Favorite[]
+  preferredAudioCodes String @default("th,en,zh")
+  preferredSubtitleCodes String @default("th,en,zh")
+  playbackSpeed Float @default(1)
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields:[userId], references:[id], onDelete:Cascade)
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  slug      String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields:[userId], references:[id], onDelete:Cascade)
+  sources   SourceCategory[]
+  rules     SearchRuleCategory[]
+  contents  ContentCategory[]
+  @@unique([userId, slug])
+  @@index([userId])
+}
+
+model Source {
+  id            String   @id @default(cuid())
+  userId        String
+  name          String
+  url           String
+  scanWindow    Int      @default(30)
+  scanIntervalHours Int @default(24)
+  enabled       Boolean  @default(true)
+  lastScannedAt DateTime?
+  lastError     String?
+  lastScanCount Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields:[userId], references:[id], onDelete:Cascade)
+  categories    SourceCategory[]
+  rules         SearchRuleSource[]
+  videoSources  VideoSource[]
+  @@index([userId])
+}
+
+model SourceCategory {
+  sourceId   String
+  categoryId String
+  source     Source   @relation(fields:[sourceId], references:[id], onDelete: Cascade)
+  category   Category @relation(fields:[categoryId], references:[id], onDelete: Cascade)
+  @@id([sourceId, categoryId])
+}
+
+model SearchRule {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  mode        String   @default("ANY")
+  keywords    String
+  active      Boolean  @default(true)
+  lastMatchedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields:[userId], references:[id], onDelete:Cascade)
+  sources     SearchRuleSource[]
+  categories  SearchRuleCategory[]
+  contents    ContentRule[]
+  @@index([userId])
+}
+
+model SearchRuleSource {
+  ruleId   String
+  sourceId String
+  rule     SearchRule @relation(fields:[ruleId], references:[id], onDelete: Cascade)
+  source   Source @relation(fields:[sourceId], references:[id], onDelete: Cascade)
+  @@id([ruleId, sourceId])
+}
+
+model SearchRuleCategory {
+  ruleId     String
+  categoryId String
+  rule       SearchRule @relation(fields:[ruleId], references:[id], onDelete: Cascade)
+  category   Category @relation(fields:[categoryId], references:[id], onDelete: Cascade)
+  @@id([ruleId, categoryId])
+}
+
+model Content {
+  id          String   @id @default(cuid())
+  userId      String
+  title       String
+  originalTitle String?
+  englishTitle String?
+  thaiTitle String?
+  displayTitle String?
+  titleSource String?
+  normalized  String
+  description String?
+  posterUrl   String?
+  backdropUrl String?
+  contentType String   @default("VIDEO")
+  year        Int?
+  metadataJson String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields:[userId], references:[id], onDelete:Cascade)
+  categories ContentCategory[]
+  seasons     Season[]
+  sources    VideoSource[]
+  rules      ContentRule[]
+  favorites  Favorite[]
+  @@index([userId])
+  @@index([userId, normalized])
+}
+
+model ContentCategory {
+  contentId  String
+  categoryId String
+  content    Content @relation(fields:[contentId], references:[id], onDelete: Cascade)
+  category   Category @relation(fields:[categoryId], references:[id], onDelete: Cascade)
+  @@id([contentId, categoryId])
+}
+
+model ContentRule {
+  contentId String
+  ruleId    String
+  content   Content @relation(fields:[contentId], references:[id], onDelete: Cascade)
+  rule      SearchRule @relation(fields:[ruleId], references:[id], onDelete: Cascade)
+  @@id([contentId, ruleId])
+}
+
+model Season {
+  id        String @id @default(cuid())
+  contentId String
+  number    Int
+  title     String?
+  content   Content @relation(fields:[contentId], references:[id], onDelete: Cascade)
+  episodes  Episode[]
+  @@unique([contentId, number])
+}
+
+model Episode {
+  id        String @id @default(cuid())
+  seasonId  String
+  number    Int
+  title     String
+  originalTitle String?
+  englishTitle String?
+  thaiTitle String?
+  displayTitle String?
+  description String?
+  thumbnailUrl String?
+  duration  Int?
+  publishedAt DateTime?
+  season    Season @relation(fields:[seasonId], references:[id], onDelete: Cascade)
+  sources   VideoSource[]
+  history   WatchHistory[]
+  @@unique([seasonId, number])
+}
+
+model VideoSource {
+  id         String @id @default(cuid())
+  sourceId   String
+  contentId  String?
+  episodeId  String?
+  url        String
+  type       String
+  title      String?
+  sourceTitle String?
+  siteName   String?
+  siteUrl    String?
+  thumbnailUrl String?
+  duration   Int?
+  resolution String?
+  discoveredAt DateTime @default(now())
+  publishedAt  DateTime?
+  fingerprint  String?
+  source     Source @relation(fields:[sourceId], references:[id], onDelete: Cascade)
+  content    Content? @relation(fields:[contentId], references:[id], onDelete: Cascade)
+  episode    Episode? @relation(fields:[episodeId], references:[id], onDelete: Cascade)
+  tracks     MediaTrack[]
+  history    WatchHistory[]
+  @@index([sourceId])
+  @@index([episodeId])
+}
+
+model WatchHistory {
+  id          String   @id @default(cuid())
+  userId      String
+  episodeId   String
+  sourceId    String?
+  positionSec Int      @default(0)
+  completed   Boolean  @default(false)
+  updatedAt   DateTime @updatedAt
+  user        User     @relation(fields:[userId], references:[id], onDelete:Cascade)
+  episode     Episode  @relation(fields:[episodeId], references:[id], onDelete:Cascade)
+  source      VideoSource? @relation(fields:[sourceId], references:[id], onDelete:SetNull)
+  @@unique([userId, episodeId])
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  contentId String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields:[userId], references:[id], onDelete:Cascade)
+  content   Content  @relation(fields:[contentId], references:[id], onDelete:Cascade)
+  @@unique([userId, contentId])
+}
+
+
+model MediaTrack {
+  id             String      @id @default(cuid())
+  videoSourceId  String
+  kind           String      // AUDIO | SUBTITLE
+  languageCode   String?
+  languageLabel  String
+  url            String
+  mimeType       String?
+  format         String?
+  isDefault      Boolean     @default(false)
+  isForced       Boolean     @default(false)
+  createdAt      DateTime    @default(now())
+  videoSource    VideoSource @relation(fields:[videoSourceId], references:[id], onDelete: Cascade)
+  @@index([videoSourceId])
+  @@index([videoSourceId, kind])
+}
