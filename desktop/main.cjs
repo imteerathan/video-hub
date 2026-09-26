@@ -146,8 +146,16 @@ function runDatabaseBootstrap() {
       log('[prisma:err]', d.toString().trim());
     });
     child.stdout.on('data', d => log('[prisma]', d.toString().trim()));
-    child.on('error', reject);
+    const timeout = setTimeout(() => {
+      try { child.kill(); } catch {}
+      reject(new Error('Prisma database bootstrap timed out after 30000ms. Check the application log for the Prisma command and database path.'));
+    }, 30000);
+    child.on('error', err => {
+      clearTimeout(timeout);
+      reject(err);
+    });
     child.on('exit', code => {
+      clearTimeout(timeout);
       log('[prisma] exited', code);
       code === 0 ? resolve() : reject(new Error('Prisma database bootstrap failed (' + code + '): ' + stderr));
     });
