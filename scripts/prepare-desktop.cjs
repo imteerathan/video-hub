@@ -22,3 +22,18 @@ fs.cpSync(clientSource, clientTarget, { recursive: true, force: true });
 
 console.log('Desktop Prisma artifacts prepared for standalone packaging.');
 console.log({ source, target, clientTarget });
+
+const staticSource = path.join(root, '.next', 'static');
+const staticTarget = path.join(root, '.next', 'standalone', '.next', 'static');
+if (!fs.existsSync(staticSource)) throw new Error('Next static assets were not found at .next/static');
+fs.mkdirSync(path.dirname(staticTarget), { recursive: true });
+fs.cpSync(staticSource, staticTarget, { recursive: true, force: true });
+
+const publicSource = path.join(root, 'public');
+const publicTarget = path.join(root, '.next', 'standalone', 'public');
+if (fs.existsSync(publicSource)) {
+  fs.cpSync(publicSource, publicTarget, { recursive: true, force: true });
+}
+
+console.log('Desktop Next.js standalone assets prepared.');
+console.log({ staticSource, staticTarget, publicSource, publicTarget });
