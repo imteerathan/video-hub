@@ -1,0 +1,60 @@
+name: Windows Desktop Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package.json
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Build Next.js
+        run: npm run build
+
+      - name: Desktop smoke test
+        shell: pwsh
+        run: |
+          $env:ELECTRON_RUN_AS_NODE = "1"
+          npx electron desktop/main.cjs --smoke-test
+
+      - name: Package Windows app
+        run: npx electron-builder --win nsis portable --publish never
+
+      - name: Verify release artifacts
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem release -Filter "*Setup*.exe" -File
+          $portable = Get-ChildItem release -Filter "*.exe" -File | Where-Object { $_.Name -notlike "*Setup*" }
+          if ($installer.Count -lt 1) { throw "NSIS installer was not generated" }
+          if ($portable.Count -lt 1) { throw "Portable executable was not generated" }
+          $installer | Select-Object Name, Length
+          $portable | Select-Object Name, Length
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-hub-windows
+          path: release/*.exe
+          if-no-files-found: error
+          retention-days: 14
