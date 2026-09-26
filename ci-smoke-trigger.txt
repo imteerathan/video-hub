@@ -1,0 +1,1 @@
+Video Hub Windows CI smoke trigger.
