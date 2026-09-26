@@ -75,8 +75,9 @@ jobs:
             if ($matches) { $installed = $matches[0].FullName }
           }
           $log = Join-Path $env:LOCALAPPDATA "video-hub-installed-smoke-test.log"
-          & $installed --smoke-test 2>&1 | Tee-Object -FilePath $log
-          if ($LASTEXITCODE -ne 0) { throw "Installed app smoke test failed with exit code $LASTEXITCODE" }
+          & $installed --smoke-test-ui 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw "Installed app UI smoke test failed with exit code $LASTEXITCODE" }
+          Write-Host "Installed app UI smoke test passed."
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
