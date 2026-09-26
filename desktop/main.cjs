@@ -155,6 +155,16 @@ function httpGet(url, timeoutMs = 10000) {
   });
 }
 
+function withTimeout(promise, timeoutMs, message) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 async function runSmokeTest() {
   const health = await httpGet(`http://127.0.0.1:${PORT}/api/health`);
   if (health.statusCode !== 200 || !health.body.includes('"ok":true')) {
@@ -276,7 +286,11 @@ async function loadAppPage({ validateUi = true } = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) await createWindow();
   await setStartupStatus('Loading Video Hub...', `Connecting to local service on port ${PORT}.`);
   await waitForServer(`http://127.0.0.1:${PORT}/api/health`, 60000);
-  await mainWindow.loadURL(`http://127.0.0.1:${PORT}/`);
+  await withTimeout(
+    mainWindow.loadURL(`http://127.0.0.1:${PORT}/`),
+    60000,
+    'Video Hub page took too long to load.'
+  );
 
   if (validateUi) {
     const bodyText = await mainWindow.webContents.executeJavaScript(
@@ -345,7 +359,7 @@ if (!gotLock) {
         }
         log('UI SMOKE TEST PASSED', title, bodyText.slice(0, 160).replace(/\s+/g, ' '));
         stopServer();
-        app.quit();
+        app.exit(0);
         return;
       }
 
