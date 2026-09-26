@@ -73,7 +73,13 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     },
-    "asar": false
+    "asar": false,
+    "extraFiles": [
+      {
+        "from": "node_modules/.prisma",
+        "to": "node_modules/.prisma"
+      }
+    ]
   },
   "description": "Personal video catalog and player desktop application",
   "author": "Video Hub"
