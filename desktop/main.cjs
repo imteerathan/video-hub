@@ -304,7 +304,7 @@ function createMainWindow() {
     if (level >= 2) log('[renderer-console]', message, 'at ' + sourceId + ':' + line);
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\\/\\//i.test(url)) shell.openExternal(url);
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
   mainWindow.on('closed', () => { mainWindow = null; });
