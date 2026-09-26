@@ -115,23 +115,78 @@ function stopServer() {
   serverProcess = null;
 }
 
-function runSmokeTest() {
+function httpGet(url, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
-    const req = http.get(`http://127.0.0.1:${PORT}/api/health`, res => {
+    const req = http.get(url, res => {
       let body = '';
       res.setEncoding('utf8');
-      res.on('data', c => { body += c; });
-      res.on('end', () => {
-        if (res.statusCode === 200 && body.includes('"ok":true')) resolve();
-        else reject(new Error(`Health check failed: HTTP ${res.statusCode} ${body}`));
+      res.on('data', c => {
+        body += c;
+        if (body.length > 1024 * 1024) req.destroy(new Error('Response too large'));
       });
+      res.on('end', () => resolve({ statusCode: res.statusCode || 0, body }));
     });
     req.on('error', reject);
-    req.setTimeout(5000, () => req.destroy(new Error('Health check timeout')));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`HTTP timeout: ${url}`)));
   });
 }
 
-async function createWindow() {
+async function runSmokeTest() {
+  const health = await httpGet(`http://127.0.0.1:${PORT}/api/health`);
+  if (health.statusCode !== 200 || !health.body.includes('"ok":true')) {
+    throw new Error(`Health check failed: HTTP ${health.statusCode} ${health.body}`);
+  }
+  const home = await httpGet(`http://127.0.0.1:${PORT}/`);
+  if (home.statusCode !== 200 || !home.body.includes('VIDEO HUB')) {
+    throw new Error(`Home page check failed: HTTP ${home.statusCode}`);
+  }
+  log('HTTP smoke test passed');
+}
+
+function startupErrorHtml(errorMessage) {
+  const safe = String(errorMessage)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+  const pathText = String(logPath())
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Video Hub startup error</title>
+  <style>body{margin:0;background:#08090b;color:#f5f6f8;font-family:Segoe UI,system-ui,sans-serif;padding:48px}
+  main{max-width:900px;margin:auto;background:#121419;border:1px solid #292c34;border-radius:18px;padding:28px}
+  h1{margin:0 0 12px}p{color:#aeb2bd;line-height:1.6}pre{white-space:pre-wrap;background:#0b0c0f;border:1px solid #252830;border-radius:10px;padding:14px;color:#ffb4b4}
+  code{word-break:break-all}</style></head><body><main><h1>Video Hub could not finish loading</h1>
+  <p>The app started, but the local Video Hub page did not finish loading.</p><pre>${safe}</pre>
+  <p>Diagnostic log: <code>${pathText}</code></p></main></body></html>`;
+}
+
+async function showStartupError(error) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = new BrowserWindow({
+      width: 980,
+      height: 680,
+      minWidth: 720,
+      minHeight: 520,
+      backgroundColor: '#08090b',
+      autoHideMenuBar: true,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+  }
+  try {
+    await mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(startupErrorHtml(error)));
+  } catch (fallbackError) {
+    log('[startup-error-window-failed]', fallbackError?.stack || fallbackError);
+  }
+}
+
+async function createWindow({ validateUi = true } = {}) {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -148,7 +203,29 @@ async function createWindow() {
   });
 
   await waitForServer(`http://127.0.0.1:${PORT}/api/health`);
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (isMainFrame) log('[renderer] did-fail-load', errorCode, errorDescription, validatedURL);
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    log('[renderer] render-process-gone', JSON.stringify(details));
+  });
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (level >= 2) log('[renderer-console]', message, `at ${sourceId}:${line}`);
+  });
+
   await mainWindow.loadURL(`http://127.0.0.1:${PORT}/`);
+
+  if (validateUi) {
+    const bodyText = await mainWindow.webContents.executeJavaScript(
+      'document.body ? document.body.innerText.slice(0, 5000) : ""',
+      true
+    );
+    if (!bodyText || bodyText.trim().length < 10) {
+      throw new Error('Renderer loaded an empty page');
+    }
+    log('[renderer] UI loaded', bodyText.slice(0, 120).replace(/\s+/g, ' '));
+  }
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
@@ -189,14 +266,33 @@ if (!gotLock) {
         return;
       }
 
-      await createWindow();
+      const smokeUi = process.argv.includes('--smoke-test-ui');
+      try {
+        await createWindow({ validateUi: true });
+        if (smokeUi) {
+          await new Promise(resolve => setTimeout(resolve, 350));
+          const title = await mainWindow.webContents.getTitle();
+          const bodyText = await mainWindow.webContents.executeJavaScript(
+            'document.body ? document.body.innerText.slice(0, 5000) : ""',
+            true
+          );
+          if (!bodyText || bodyText.trim().length < 10) throw new Error('UI smoke test found an empty renderer');
+          log('UI SMOKE TEST PASSED', title, bodyText.slice(0, 160).replace(/\s+/g, ' '));
+          stopServer();
+          app.quit();
+          return;
+        }
+      } catch (err) {
+        log('[renderer-startup-failed]', err?.stack || err);
+        await showStartupError(err?.message || err);
+        return;
+      }
       app.on('activate', async () => {
         if (BrowserWindow.getAllWindows().length === 0) await createWindow();
       });
     } catch (err) {
       log('[startup-failed]', err?.stack || err);
-      stopServer();
-      app.quit();
+      await showStartupError(err?.message || err);
     }
   });
 
