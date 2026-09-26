@@ -2,23 +2,78 @@ const { app, BrowserWindow, session, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const http = require('node:http');
 const net = require('node:net');
 
 let PORT = Number(process.env.VIDEO_HUB_PORT || 3187);
 let serverProcess = null;
 let mainWindow = null;
+let splashWindow = null;
 let serverRoot = null;
 let userData = null;
 
+function fallbackLogDir() {
+  const base = process.env.LOCALAPPDATA || process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  return path.join(base, 'Video Hub', 'logs');
+}
+
 function logPath() {
-  return path.join(app.getPath('userData'), 'video-hub-desktop.log');
+  try {
+    return path.join(app.getPath('userData'), 'video-hub-desktop.log');
+  } catch {
+    return path.join(fallbackLogDir(), 'video-hub-desktop.log');
+  }
+}
+
+function formatLogValue(value) {
+  if (value instanceof Error) return value.stack || value.message;
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value); } catch { return String(value); }
 }
 
 function log(...args) {
-  const line = `[${new Date().toISOString()}] ${args.map(String).join(' ')}\n`;
-  try { fs.appendFileSync(logPath(), line); } catch {}
-  console.log(...args);
+  const line = '[' + new Date().toISOString() + '] ' + args.map(formatLogValue).join(' ') + '\n';
+  const targets = [logPath(), path.join(fallbackLogDir(), 'video-hub-desktop.log')];
+  for (const target of targets) {
+    try {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.appendFileSync(target, line);
+      break;
+    } catch {}
+  }
+  try { console.log(...args); } catch {}
+}
+
+function bootstrapLogPath() {
+  return path.join(fallbackLogDir(), 'video-hub-bootstrap.log');
+}
+
+function bootstrapLog(...args) {
+  const line = '[' + new Date().toISOString() + '] ' + args.map(formatLogValue).join(' ') + '\n';
+  try {
+    fs.mkdirSync(path.dirname(bootstrapLogPath()), { recursive: true });
+    fs.appendFileSync(bootstrapLogPath(), line);
+  } catch {}
+  try { console.log(...args); } catch {}
+}
+
+process.on('uncaughtException', err => bootstrapLog('[uncaughtException]', err));
+process.on('unhandledRejection', err => bootstrapLog('[unhandledRejection]', err));
+
+try {
+  fs.mkdirSync(path.dirname(bootstrapLogPath()), { recursive: true });
+  bootstrapLog('--- Video Hub bootstrap ---');
+  bootstrapLog('Executable:', process.execPath);
+  bootstrapLog('Arguments:', process.argv);
+  bootstrapLog('Platform:', process.platform, process.arch);
+} catch {}
+
+try {
+  app.commandLine.appendSwitch('enable-logging');
+  app.commandLine.appendSwitch('log-file', bootstrapLogPath());
+} catch (err) {
+  bootstrapLog('[chromium-logging-init-failed]', err);
 }
 
 function appRoot() {
@@ -54,7 +109,7 @@ function waitForServer(url, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
     const retry = () => {
       if (Date.now() - started > timeoutMs) {
-        return reject(new Error(`Video Hub server did not start in time: ${url}`));
+        return reject(new Error('Video Hub server did not start in time: ' + url));
       }
       setTimeout(probe, 250);
     };
@@ -76,30 +131,33 @@ function runDatabaseBootstrap() {
   userData = app.getPath('userData');
   fs.mkdirSync(userData, { recursive: true });
   const dbPath = path.join(userData, 'video-hub.db');
-  const env = { ...process.env, DATABASE_URL: `file:${dbPath}`, ELECTRON_RUN_AS_NODE: '1' };
+  const env = { ...process.env, DATABASE_URL: 'file:' + dbPath, ELECTRON_RUN_AS_NODE: '1' };
   const prismaCli = path.join(root, 'node_modules', 'prisma', 'build', 'index.js');
+  log('[startup] database bootstrap', { dbPath, prismaCli });
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [
       prismaCli, 'db', 'push',
       '--schema', path.join(root, 'prisma', 'schema.prisma'),
       '--skip-generate'
-    ], {
-      cwd: root,
-      env,
-      stdio: 'pipe',
-      windowsHide: true,
-    });
+    ], { cwd: root, env, stdio: 'pipe', windowsHide: true });
     let stderr = '';
     child.stderr.on('data', d => {
       stderr += d.toString();
       log('[prisma:err]', d.toString().trim());
     });
     child.stdout.on('data', d => log('[prisma]', d.toString().trim()));
-    child.on('error', reject);
+    const timeout = setTimeout(() => {
+      try { child.kill(); } catch {}
+      reject(new Error('Prisma database bootstrap timed out after 30000ms. Check the application log for the Prisma command and database path.'));
+    }, 30000);
+    child.on('error', err => {
+      clearTimeout(timeout);
+      reject(err);
+    });
     child.on('exit', code => {
-      code === 0
-        ? resolve()
-        : reject(new Error(`Prisma database bootstrap failed (${code}): ${stderr}`));
+      clearTimeout(timeout);
+      log('[prisma] exited', code);
+      code === 0 ? resolve() : reject(new Error('Prisma database bootstrap failed (' + code + '): ' + stderr));
     });
   });
 }
@@ -112,20 +170,14 @@ function startServer() {
     NODE_ENV: 'production',
     PORT: String(PORT),
     HOSTNAME: '127.0.0.1',
-    DATABASE_URL: `file:${dbPath}`,
+    DATABASE_URL: 'file:' + dbPath,
     ELECTRON_RUN_AS_NODE: '1',
   };
-
   serverRoot = root;
   const server = path.join(root, '.next', 'standalone', 'server.js');
-  serverProcess = spawn(process.execPath, [server], {
-    cwd: root,
-    env,
-    stdio: 'pipe',
-    windowsHide: true,
-  });
-
-  serverProcess.on('error', err => log('[video-hub] server error', err.message));
+  log('[startup] starting local server', { server, PORT, dbPath });
+  serverProcess = spawn(process.execPath, [server], { cwd: root, env, stdio: 'pipe', windowsHide: true });
+  serverProcess.on('error', err => log('[video-hub] server error', err));
   serverProcess.on('exit', (code, signal) => log('[video-hub] server exited', code, signal || ''));
   serverProcess.stdout?.on('data', data => log('[next]', data.toString().trim()));
   serverProcess.stderr?.on('data', data => log('[next:err]', data.toString().trim()));
@@ -144,199 +196,177 @@ function httpGet(url, timeoutMs = 10000) {
       res.setEncoding('utf8');
       res.on('data', c => {
         body += c;
-        if (body.length > 1024 * 1024) {
-          req.destroy(new Error('Response too large'));
-        }
+        if (body.length > 1024 * 1024) req.destroy(new Error('Response too large'));
       });
       res.on('end', () => resolve({ statusCode: res.statusCode || 0, body }));
     });
     req.on('error', reject);
-    req.setTimeout(timeoutMs, () => req.destroy(new Error(`HTTP timeout: ${url}`)));
-  });
-}
-
-function withTimeout(promise, timeoutMs, message) {
-  let timer = null;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-  });
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('HTTP timeout: ' + url)));
   });
 }
 
 async function runSmokeTest() {
-  const health = await httpGet(`http://127.0.0.1:${PORT}/api/health`);
+  const health = await httpGet('http://127.0.0.1:' + PORT + '/api/health');
   if (health.statusCode !== 200 || !health.body.includes('"ok":true')) {
-    throw new Error(`Health check failed: HTTP ${health.statusCode} ${health.body}`);
+    throw new Error('Health check failed: HTTP ' + health.statusCode + ' ' + health.body);
   }
-  const home = await httpGet(`http://127.0.0.1:${PORT}/`);
+  const home = await httpGet('http://127.0.0.1:' + PORT + '/');
   if (home.statusCode !== 200 || !home.body.includes('VIDEO HUB')) {
-    throw new Error(`Home page check failed: HTTP ${home.statusCode}`);
+    throw new Error('Home page check failed: HTTP ' + home.statusCode);
   }
   log('HTTP smoke test passed');
 }
 
 function startupLoadingHtml() {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Video Hub</title>
-  <style>
-    body{margin:0;background:#08090b;color:#f5f6f8;font-family:Segoe UI,system-ui,sans-serif;display:grid;place-items:center;height:100vh}
-    main{text-align:center;min-width:360px;padding:32px}
-    .logo{font-size:34px;font-weight:800;letter-spacing:.14em;margin-bottom:18px}
-    .spinner{width:34px;height:34px;border:3px solid #2b2f39;border-top-color:#f5f6f8;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 18px}
-    h1{font-size:19px;margin:0 0 8px}
-    p{margin:0;color:#9ea4b1;line-height:1.5}
-    @keyframes spin{to{transform:rotate(360deg)}}
-  </style></head><body><main>
-    <div class="logo">VIDEO HUB</div>
-    <div class="spinner"></div>
-    <h1 id="status">Starting Video Hub...</h1>
-    <p id="detail">Preparing local database and media service.</p>
-  </main>
-  <script>
-    window.__videoHubSetStatus = function(message, detail) {
-      document.getElementById('status').textContent = message || '';
-      document.getElementById('detail').textContent = detail || '';
-    };
-  </script></body></html>`;
+  const logFile = String(logPath()).replaceAll('\\', '\\\\');
+  const bootstrapFile = String(bootstrapLogPath()).replaceAll('\\', '\\\\');
+  return '<!doctype html><html><head><meta charset="utf-8"><title>Video Hub</title>' +
+    '<style>*{box-sizing:border-box}body{margin:0;background:#07080a;color:#f4f5f7;font-family:"Segoe UI",system-ui,sans-serif;display:grid;place-items:center;height:100vh;overflow:hidden}' +
+    'main{width:min(640px,calc(100vw - 48px));padding:34px 38px;background:linear-gradient(180deg,#11141a,#0d0f13);border:1px solid #292e38;border-radius:22px;box-shadow:0 24px 90px rgba(0,0,0,.45)}' +
+    '.brand{font-size:27px;font-weight:850;letter-spacing:.16em;text-align:center}.sub{margin-top:7px;text-align:center;color:#7f8794;font-size:12px;letter-spacing:.04em;text-transform:uppercase}' +
+    '.ring{width:48px;height:48px;margin:27px auto 19px;border:4px solid #2b313b;border-top-color:#f1f3f6;border-radius:50%;animation:spin 1s linear infinite}h1{font-size:19px;line-height:1.3;text-align:center;margin:0 0 8px}' +
+    'p{margin:0;text-align:center;color:#aab0bb;line-height:1.55}.bar{height:8px;background:#242934;border-radius:999px;overflow:hidden;margin-top:25px}.fill{height:100%;width:0;background:linear-gradient(90deg,#f4f5f7,#9098a6);transition:width .25s ease}' +
+    '.pct{text-align:right;color:#8f97a4;font-size:11px;margin-top:7px}.status{margin-top:19px;padding:11px 13px;background:#0a0c10;border:1px solid #20242c;border-radius:11px;font-size:12px;color:#cbd0d8}' +
+    '.label{color:#737b89}.path{margin-top:13px;font-size:10px;color:#656d79;word-break:break-all;text-align:center}.error{color:#ffb6b6;text-align:left;white-space:pre-wrap;background:#160e10;border:1px solid #4c2429;border-radius:11px;padding:12px;margin-top:16px;font-size:12px}.hidden{display:none}@keyframes spin{to{transform:rotate(360deg)}}</style>' +
+    '</head><body><main><div class="brand">VIDEO HUB</div><div class="sub">Desktop startup diagnostics</div>' +
+    '<div id="ring" class="ring"></div><h1 id="status">Starting Video Hub...</h1><p id="detail">Initializing desktop application.</p>' +
+    '<div class="bar"><div id="fill" class="fill"></div></div><div id="pct" class="pct">0%</div>' +
+    '<div class="status"><span class="label">Status:</span> <span id="status2">Booting</span></div>' +
+    '<div class="path">Log: ' + logFile + '<br>Bootstrap log: ' + bootstrapFile + '</div><div id="error" class="error hidden"></div>' +
+    '</main><script>' +
+    'window.__videoHubSetStatus=function(message,detail,progress,status2){document.getElementById("status").textContent=message||"";document.getElementById("detail").textContent=detail||"";document.getElementById("fill").style.width=Math.max(0,Math.min(100,Number(progress)||0))+"%";document.getElementById("pct").textContent=Math.round(Number(progress)||0)+"%";document.getElementById("status2").textContent=status2||message||"";};' +
+    'window.__videoHubShowError=function(message){document.getElementById("ring").style.display="none";document.getElementById("error").classList.remove("hidden");document.getElementById("error").textContent=message||"Unknown startup error";};' +
+    '</script></body></html>';
 }
 
-async function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1000,
-    minHeight: 700,
-    backgroundColor: '#0b0b0f',
-    autoHideMenuBar: true,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
+function startupErrorHtml(errorMessage) {
+  const safe = String(errorMessage).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+  const pathText = String(logPath()).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+  const bootstrapText = String(bootstrapLogPath()).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+  return '<!doctype html><html><head><meta charset="utf-8"><title>Video Hub startup error</title><style>' +
+    'body{margin:0;background:#08090b;color:#f5f6f8;font-family:"Segoe UI",system-ui,sans-serif;padding:48px}main{max-width:920px;margin:auto;background:#121419;border:1px solid #292c34;border-radius:18px;padding:28px}h1{margin:0 0 12px}p{color:#aeb2bd;line-height:1.6}pre{white-space:pre-wrap;background:#0b0c0f;border:1px solid #3a2227;border-radius:10px;padding:14px;color:#ffb4b4}code{word-break:break-all;color:#d8dde6}</style></head>' +
+    '<body><main><h1>Video Hub could not finish loading</h1><p>The application started, but startup did not complete. The diagnostic logs below contain the exact failure stage.</p>' +
+    '<pre>' + safe + '</pre><p>Application log:<br><code>' + pathText + '</code></p><p>Bootstrap/Chromium log:<br><code>' + bootstrapText + '</code></p></main></body></html>';
+}
 
+async function createSplashWindow() {
+  if (splashWindow && !splashWindow.isDestroyed()) return splashWindow;
+  splashWindow = new BrowserWindow({
+    width: 720, height: 470, minWidth: 620, minHeight: 420, resizable: false, maximizable: false, fullscreenable: false,
+    movable: true, show: true, frame: false, backgroundColor: '#07080a', title: 'Video Hub', autoHideMenuBar: true,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  splashWindow.on('closed', () => { splashWindow = null; });
+  await splashWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(startupLoadingHtml()));
+  splashWindow.show();
+  splashWindow.focus();
+  log('[startup] splash window shown');
+  return splashWindow;
+}
+
+async function setSplashStatus(message, detail, progress, status2) {
+  if (!splashWindow || splashWindow.isDestroyed()) return;
+  try {
+    await splashWindow.webContents.executeJavaScript(
+      'window.__videoHubSetStatus(' + JSON.stringify(message) + ',' + JSON.stringify(detail || '') + ',' + JSON.stringify(progress) + ',' + JSON.stringify(status2 || message) + ')',
+      true
+    );
+  } catch (err) { log('[splash-status]', err?.message || err); }
+}
+
+async function showSplashError(error) {
+  try {
+    await setSplashStatus('Startup stopped', 'Video Hub could not complete startup.', 100, 'ERROR');
+    if (splashWindow && !splashWindow.isDestroyed()) {
+      await splashWindow.webContents.executeJavaScript('window.__videoHubShowError(' + JSON.stringify(String(error)) + ')', true);
+      splashWindow.show();
+      splashWindow.focus();
+      return;
+    }
+  } catch (renderError) { log('[splash-error-render]', renderError); }
+  try {
+    const errorWindow = new BrowserWindow({ width: 980, height: 680, minWidth: 720, minHeight: 520, backgroundColor: '#08090b', autoHideMenuBar: true, show: true, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
+    await errorWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(startupErrorHtml(error)));
+  } catch (fallbackError) { bootstrapLog('[startup-error-window-failed]', fallbackError); }
+}
+
+function createMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
+  mainWindow = new BrowserWindow({
+    width: 1440, height: 900, minWidth: 1000, minHeight: 700, backgroundColor: '#0b0b0f', autoHideMenuBar: true, show: true,
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
     if (isMainFrame) log('[renderer] did-fail-load', errorCode, errorDescription, validatedURL);
   });
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    log('[renderer] render-process-gone', JSON.stringify(details));
-  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => log('[renderer] render-process-gone', details));
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-    if (level >= 2) log('[renderer-console]', message, `at ${sourceId}:${line}`);
+    if (level >= 2) log('[renderer-console]', message, 'at ' + sourceId + ':' + line);
   });
-
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
-
   mainWindow.on('closed', () => { mainWindow = null; });
-  await mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(startupLoadingHtml()));
-}
-
-async function setStartupStatus(message, detail) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  try {
-    await mainWindow.webContents.executeJavaScript(
-      `window.__videoHubSetStatus(${JSON.stringify(message)}, ${JSON.stringify(detail || '')})`,
-      true
-    );
-  } catch (err) {
-    log('[startup-status]', err?.message || err);
-  }
-}
-
-function startupErrorHtml(errorMessage) {
-  const safe = String(errorMessage)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
-  const pathText = String(logPath())
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Video Hub startup error</title>
-  <style>body{margin:0;background:#08090b;color:#f5f6f8;font-family:Segoe UI,system-ui,sans-serif;padding:48px}
-  main{max-width:900px;margin:auto;background:#121419;border:1px solid #292c34;border-radius:18px;padding:28px}
-  h1{margin:0 0 12px}p{color:#aeb2bd;line-height:1.6}pre{white-space:pre-wrap;background:#0b0c0f;border:1px solid #252830;border-radius:10px;padding:14px;color:#ffb4b4}
-  code{word-break:break-all}</style></head><body><main><h1>Video Hub could not finish loading</h1>
-  <p>The app started, but the local Video Hub page did not finish loading.</p><pre>${safe}</pre>
-  <p>Diagnostic log: <code>${pathText}</code></p></main></body></html>`;
-}
-
-async function showStartupError(error) {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    try { await createWindow(); } catch (windowError) {
-      log('[startup-error-window-failed]', windowError?.stack || windowError);
-      return;
-    }
-  }
-  try {
-    await mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(startupErrorHtml(error)));
-  } catch (fallbackError) {
-    log('[startup-error-window-failed]', fallbackError?.stack || fallbackError);
-  }
+  return mainWindow;
 }
 
 async function loadAppPage({ validateUi = true } = {}) {
-  if (!mainWindow || mainWindow.isDestroyed()) await createWindow();
-  await setStartupStatus('Loading Video Hub...', `Connecting to local service on port ${PORT}.`);
-  await waitForServer(`http://127.0.0.1:${PORT}/api/health`, 60000);
-  await withTimeout(
-    mainWindow.loadURL(`http://127.0.0.1:${PORT}/`),
-    60000,
-    'Video Hub page took too long to load.'
-  );
-
+  const window = createMainWindow();
+  await setSplashStatus('Loading Video Hub...', 'Connecting to local service on port ' + PORT + '.', 86, 'STARTING UI');
+  await waitForServer('http://127.0.0.1:' + PORT + '/api/health', 60000);
+  await window.loadURL('http://127.0.0.1:' + PORT + '/');
   if (validateUi) {
-    const bodyText = await mainWindow.webContents.executeJavaScript(
-      'document.body ? document.body.innerText.slice(0, 5000) : ""',
-      true
-    );
-    if (!bodyText || bodyText.trim().length < 10) {
-      throw new Error('Renderer loaded an empty page');
-    }
+    const bodyText = await window.webContents.executeJavaScript('document.body ? document.body.innerText.slice(0, 5000) : ""', true);
+    if (!bodyText || bodyText.trim().length < 10) throw new Error('Renderer loaded an empty page');
     log('[renderer] UI loaded', bodyText.slice(0, 120).replace(/\s+/g, ' '));
   }
 }
 
+async function closeSplash() {
+  if (!splashWindow || splashWindow.isDestroyed()) return;
+  try { splashWindow.close(); } catch {}
+  splashWindow = null;
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
+  bootstrapLog('[startup] another Video Hub instance is already running');
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
+    log('[startup] second instance requested focus');
+    if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
+    } else if (splashWindow && !splashWindow.isDestroyed()) {
+      splashWindow.show();
+      splashWindow.focus();
     }
   });
-
-  process.on('uncaughtException', err => log('[uncaughtException]', err.stack || err.message));
-  process.on('unhandledRejection', err => log('[unhandledRejection]', err?.stack || err));
 
   app.whenReady().then(async () => {
     const smokeHttp = process.argv.includes('--smoke-test');
     const smokeUi = process.argv.includes('--smoke-test-ui');
     try {
       session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-      fs.mkdirSync(app.getPath('userData'), { recursive: true });
+      userData = app.getPath('userData');
+      fs.mkdirSync(userData, { recursive: true });
+      log('[startup] app ready', { userData, packaged: app.isPackaged });
 
       if (!smokeHttp) {
-        await createWindow();
-        await setStartupStatus('Starting Video Hub...', 'Preparing the local database.');
+        await createSplashWindow();
+        await setSplashStatus('Starting Video Hub...', 'Preparing the local database.', 12, 'DATABASE');
       }
 
       await runDatabaseBootstrap();
-      await setStartupStatus('Starting media service...', 'Launching the local Video Hub server.');
+      await setSplashStatus('Database ready', 'Starting the local media service.', 40, 'DATABASE OK');
       PORT = await choosePort();
+      await setSplashStatus('Starting local service...', 'Launching Video Hub on port ' + PORT + '.', 58, 'SERVER');
       startServer();
 
       if (smokeHttp) {
-        await waitForServer(`http://127.0.0.1:${PORT}/api/health`, 30000);
+        await waitForServer('http://127.0.0.1:' + PORT + '/api/health', 30000);
         await runSmokeTest();
         log('SMOKE TEST PASSED');
         stopServer();
@@ -344,30 +374,26 @@ if (!gotLock) {
         return;
       }
 
-      await setStartupStatus('Loading library...', 'Almost ready.');
+      await setSplashStatus('Local service ready', 'Loading the Video Hub interface.', 78, 'SERVER OK');
       await loadAppPage({ validateUi: true });
+      await setSplashStatus('Ready', 'Video Hub is ready.', 100, 'READY');
 
       if (smokeUi) {
         await new Promise(resolve => setTimeout(resolve, 350));
         const title = await mainWindow.webContents.getTitle();
-        const bodyText = await mainWindow.webContents.executeJavaScript(
-          'document.body ? document.body.innerText.slice(0, 5000) : ""',
-          true
-        );
-        if (!bodyText || bodyText.trim().length < 10) {
-          throw new Error('UI smoke test found an empty renderer');
-        }
+        const bodyText = await mainWindow.webContents.executeJavaScript('document.body ? document.body.innerText.slice(0, 5000) : ""', true);
+        if (!bodyText || bodyText.trim().length < 10) throw new Error('UI smoke test found an empty renderer');
         log('UI SMOKE TEST PASSED', title, bodyText.slice(0, 160).replace(/\s+/g, ' '));
         stopServer();
-        app.exit(0);
+        await closeSplash();
+        app.quit();
         return;
       }
 
+      await new Promise(resolve => setTimeout(resolve, 250));
+      await closeSplash();
       app.on('activate', async () => {
-        if (BrowserWindow.getAllWindows().length === 0) {
-          await createWindow();
-          await loadAppPage({ validateUi: false });
-        }
+        if (BrowserWindow.getAllWindows().length === 0) await createMainWindow().loadURL('http://127.0.0.1:' + PORT + '/');
       });
     } catch (err) {
       log('[startup-failed]', err?.stack || err);
@@ -376,14 +402,16 @@ if (!gotLock) {
         app.exit(1);
         return;
       }
-      await showStartupError(err?.message || err);
+      await showSplashError(err?.message || err);
     }
+  }).catch(async err => {
+    bootstrapLog('[app-whenReady-failed]', err);
+    await showSplashError(err?.message || err);
   });
 
-  app.on('window-all-closed', () => {
-    stopServer();
-    if (process.platform !== 'darwin') app.quit();
-  });
-
+  app.on('render-process-gone', (_event, _webContents, details) => log('[app] render-process-gone', details));
+  app.on('child-process-gone', (_event, details) => log('[app] child-process-gone', details));
+  app.on('browser-window-created', (_event, window) => log('[app] browser-window-created', { id: window.id }));
+  app.on('window-all-closed', () => { stopServer(); if (process.platform !== 'darwin') app.quit(); });
   app.on('before-quit', stopServer);
 }
