@@ -80,7 +80,8 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "artifactName": "Video-Hub-Setup-${version}.${ext}"
     },
     "asar": false,
     "extraFiles": [
