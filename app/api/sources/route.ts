@@ -83,9 +83,27 @@ export async function DELETE(req:Request){
     const user=await requireUser();
     const id=new URL(req.url).searchParams.get('id');
     if(!id)return NextResponse.json({error:'id required'},{status:400});
-    await db.source.deleteMany({where:{id,userId:user.id}});
-    return NextResponse.json({ok:true});
-  }catch{
-    return NextResponse.json({error:'Unauthorized'},{status:401});
+
+    const result = await db.$transaction(async (tx) => {
+      const source = await tx.source.findFirst({ where: { id, userId: user.id }, select: { id: true } });
+      if (!source) return { deleted: 0, orphanedContent: 0 };
+
+      await tx.source.delete({ where: { id: source.id } });
+
+      // A Source is an input into the Library. Once its last VideoSource disappears,
+      // the derived Content record must disappear too instead of becoming a ghost card.
+      const orphaned = await tx.content.deleteMany({
+        where: { userId: user.id, sources: { none: {} } },
+      });
+
+      return { deleted: 1, orphanedContent: orphaned.count };
+    });
+
+    return NextResponse.json({ ok: true, ...result }, { headers: { 'Cache-Control': 'no-store' } });
+  }catch(e){
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : 'Delete failed' },
+      { status: 400 },
+    );
   }
 }
