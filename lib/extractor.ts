@@ -3,7 +3,7 @@ import { safeFetchText, assertSafeUrl } from '@/lib/security';
 export type ExtractedVideo = {
   title: string;
   url: string;
-  type: 'mp4' | 'hls' | 'dash' | 'unknown';
+  type: 'mp4' | 'hls' | 'dash' | 'webm' | 'ogg' | 'unknown';
   thumbnailUrl?: string;
   duration?: number;
   resolution?: string;
@@ -57,6 +57,20 @@ function decodeHtml(value: string) {
     .replace(/&gt;/gi, '>');
 }
 
+
+function decodeScriptValue(value: string) {
+  return decodeHtml(
+    value
+      .replace(/\\\//g, '/')
+      .replace(/\\u002f/gi, '/')
+      .replace(/\\u003a/gi, ':')
+      .replace(/\\u0026/gi, '&')
+      .replace(/\\u003f/gi, '?')
+      .replace(/\\u003d/gi, '=')
+      .replace(/\\u0025/gi, '%'),
+  );
+}
+
 function getAttr(tag: string, name: string) {
   const m = new RegExp(name + '\\s*=\\s*[\\x22\\x27]([^\\x22\\x27]+)[\\x22\\x27]', 'i').exec(tag);
   return m?.[1];
@@ -89,19 +103,60 @@ function titleFromUrl(url: string) {
 }
 
 function nearby(html: string, needle: string) {
-  const index = html.indexOf(needle);
+  const values = [needle, decodeScriptValue(needle)];
+  let index = -1;
+  for (const value of values) {
+    index = html.indexOf(value);
+    if (index >= 0) break;
+  }
   if (index < 0) return { title: undefined, thumbnail: undefined };
-  const chunk = html.slice(Math.max(0, index - 2200), Math.min(html.length, index + needle.length + 900));
+
+  const chunk = html.slice(Math.max(0, index - 4000), Math.min(html.length, index + needle.length + 2200));
   const labelled =
-    /(?:data-title|data-name|aria-label|title)=["']([^"']{3,180})["']/i.exec(chunk)?.[1] ||
-    /<h[1-4]\b[^>]*>([\s\S]{3,180}?)<\/h[1-4]>/i.exec(chunk)?.[1];
+    /(?:data-title|data-name|data-label|aria-label|title|alt)=["']([^"']{3,180})["']/i.exec(chunk)?.[1] ||
+    /<h[1-4]\b[^>]*>([\s\S]{3,220}?)<\/h[1-4]>/i.exec(chunk)?.[1] ||
+    /["'](?:title|name|label|videoTitle|displayTitle)["']\s*:\s*["']([^"']{3,220})["']/i.exec(chunk)?.[1];
   const image =
-    /<img\b[^>]*?(?:src|data-src|data-original)=["']([^"']+)["'][^>]*>/i.exec(chunk)?.[1] ||
-    /background-image\s*:\s*url\(["']?([^)"']+)["']?\)/i.exec(chunk)?.[1];
+    /<img\b[^>]*?(?:src|data-src|data-original|data-lazy-src|data-thumb|data-thumbnail|poster)=["']([^"']+)["'][^>]*>/i.exec(chunk)?.[1] ||
+    /["'](?:thumbnail|thumbnailUrl|poster|posterUrl|image|imageUrl|thumb|thumbUrl)["']\s*:\s*["']([^"']+)["']/i.exec(chunk)?.[1];
   return {
     title: labelled ? decodeHtml(labelled.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()) : undefined,
-    thumbnail: image,
+    thumbnail: image ? decodeScriptValue(image.trim()) : undefined,
   };
+}
+
+function mediaType(url: string): ExtractedVideo['type'] {
+  const lower = url.toLowerCase();
+  if (/\.m3u8(?:$|\?)/i.test(lower)) return 'hls';
+  if (/\.mpd(?:$|\?)/i.test(lower)) return 'dash';
+  if (/\.mp4(?:$|\?)/i.test(lower)) return 'mp4';
+  if (/\.webm(?:$|\?)/i.test(lower)) return 'webm';
+  if (/\.ogg(?:$|\?)/i.test(lower)) return 'ogg';
+  return 'unknown';
+}
+
+function extractMediaUrls(text: string) {
+  const out: string[] = [];
+  const add = (raw: string) => {
+    const value = decodeScriptValue(raw.trim());
+    if (/\.(?:m3u8|mpd|mp4|webm|ogg)(?:[?#]|$)/i.test(value)) out.push(value);
+  };
+  for (const m of text.matchAll(/(?:https?:)?\/\/[^\s"'<>]+\.(?:m3u8|mpd|mp4|webm|ogg)(?:\?[^\s"'<>]*)?/gi)) add(m[0]);
+  for (const m of text.matchAll(/["']((?:https?:\/\/|\/\/|\/|\.\/|\.\.\/)[^"'<>\\s]+\.(?:m3u8|mpd|mp4|webm|ogg)(?:\?[^"'<>\\s]*)?)/gi)) add(m[1]);
+  const decoded = text.replace(/\\\//g, '/');
+  if (decoded !== text) {
+    for (const m of decoded.matchAll(/(?:https?:)?\/\/[^\s"'<>]+\.(?:m3u8|mpd|mp4|webm|ogg)(?:\?[^\s"'<>]*)?/gi)) add(m[0]);
+  }
+  return [...new Set(out)];
+}
+
+function extractScriptUrls(html: string, baseUrl: string) {
+  const urls: string[] = [];
+  for (const m of html.matchAll(/<script\b[^>]+src=["']([^"']+)["'][^>]*>/gi)) {
+    const url = absolute(baseUrl, decodeScriptValue(m[1]));
+    if (url && !urls.includes(url)) urls.push(url);
+  }
+  return urls.slice(0, 16);
 }
 
 export async function extractPublicVideoSources(
@@ -131,10 +186,23 @@ export async function extractPublicVideoSources(
     metaContent(html, 'twitter:image') ||
     undefined;
 
+  const texts = [html];
+  const pageOrigin = new URL(res.url).origin;
+  const scriptUrls = extractScriptUrls(html, res.url);
+  for (const scriptUrl of scriptUrls) {
+    try {
+      if (new URL(scriptUrl).origin !== pageOrigin) continue;
+      const script = await safeFetchText(scriptUrl);
+      if (script.response.ok) texts.push(script.text);
+    } catch {}
+  }
+
   const out: ExtractedVideo[] = [];
+  const seen = new Set<string>();
   const push = (url: string, title = '', thumb?: string) => {
     const x = absolute(res.url, url);
-    if (!x || out.some((v) => v.url === x)) return;
+    if (!x || seen.has(x)) return;
+    seen.add(x);
 
     const context = nearby(html, url);
     const resolvedThumb =
@@ -173,7 +241,7 @@ export async function extractPublicVideoSources(
     const tag = m[0];
     const elementTitle = tagTitle(tag);
     const src = m[1] || /(?:data-src|data-video)=["']([^"']+)["']/i.exec(tag)?.[1];
-    const poster = getAttr(tag, 'poster') || pageThumbnail;
+    const poster = getAttr(tag, 'poster') || getAttr(tag, 'data-poster') || pageThumbnail;
     if (src) push(src, elementTitle, poster);
     for (const sm of m[2].matchAll(/<source\b[^>]*src=["']([^"']+)["'][^>]*>/gi)) {
       push(sm[1], elementTitle, poster);
@@ -185,8 +253,10 @@ export async function extractPublicVideoSources(
     if (value) push(value, pageTitle, pageThumbnail);
   }
 
-  for (const sm of html.matchAll(/(?:https?:)?\/\/[^\s"'<>]+\.(?:m3u8|mpd|mp4)(?:\?[^\s"'<>]*)?/gi)) {
-    push(sm[0]);
+  for (const text of texts) {
+    for (const url of extractMediaUrls(text)) {
+      push(url, '', undefined);
+    }
   }
 
   return out;
