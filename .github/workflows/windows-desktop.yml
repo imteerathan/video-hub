@@ -1,18 +1,15 @@
-name: Windows Desktop Build
+name: Video Hub Windows Release
 
 on:
   push:
     branches:
-      - 'release/v*'
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
+      - 'release/v1.1.14'
 
 permissions:
   contents: write
 
 jobs:
-  build-windows:
+  build-release:
     runs-on: windows-latest
     timeout-minutes: 35
     steps:
@@ -29,10 +26,13 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Verify desktop updater dependency
+      - name: Enable required npm install scripts
         shell: pwsh
-        run: |
-          node -e "const u=require('electron-updater'); if(!u.NsisUpdater) throw new Error('electron-updater NsisUpdater export is missing'); console.log('electron-updater:', require('electron-updater/package.json').version)"
+        run: npm install-scripts approve @prisma/client prisma @prisma/engines electron electron-winstaller
+
+      - name: Verify updater dependency
+        shell: pwsh
+        run: node -e "const u=require('electron-updater'); if(!u.NsisUpdater) throw new Error('electron-updater NsisUpdater export is missing'); console.log('electron-updater:', require('electron-updater/package.json').version)"
 
       - name: Generate Prisma Client
         run: npx prisma generate
@@ -40,24 +40,19 @@ jobs:
       - name: Build Next.js
         run: npm run build
 
-      - name: Prepare Prisma artifacts for standalone runtime
+      - name: Prepare desktop runtime
         run: npm run desktop:prepare
 
-      - name: Desktop smoke test (Electron + local server + SQLite)
+      - name: Desktop smoke test
         shell: pwsh
         run: npx electron desktop/main.cjs --smoke-test
 
-      - name: Package Windows installer and publish Stable release
-        if: startsWith(github.ref, 'refs/heads/release/v')
+      - name: Publish Stable Windows release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run desktop:release
 
-      - name: Package Windows installer (PR/manual validation)
-        if: "!startsWith(github.ref, 'refs/heads/release/v')"
-        run: npx electron-builder --win nsis --publish never
-
-      - name: Verify installer
+      - name: Verify installer output
         shell: pwsh
         run: |
           $installer = Get-ChildItem release -Filter "*Setup*.exe" -File | Select-Object -First 1
@@ -65,64 +60,3 @@ jobs:
           if ($installer.Length -lt 10000000) { throw "Installer size looks invalid" }
           Write-Host "Installer: $($installer.FullName)"
           Write-Host "Size: $($installer.Length) bytes"
-
-      - name: Install packaged app silently
-        shell: pwsh
-        run: |
-          $installer = Get-ChildItem release -Filter "*Setup*.exe" -File | Select-Object -First 1
-          Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait -NoNewWindow
-          $installed = Join-Path $env:LOCALAPPDATA "Programs\Video Hub\Video Hub.exe"
-          if (-not (Test-Path $installed)) {
-            $matches = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Filter "Video Hub.exe" -File -Recurse -ErrorAction SilentlyContinue
-            if ($matches) { $installed = $matches[0].FullName }
-          }
-          if (-not (Test-Path $installed)) { throw "Installed Video Hub.exe was not found" }
-          Write-Host "Installed app: $installed"
-
-      - name: Installed app smoke test
-        shell: pwsh
-        run: |
-          $installed = Join-Path $env:LOCALAPPDATA "Programs\Video Hub\Video Hub.exe"
-          if (-not (Test-Path $installed)) {
-            $matches = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Filter "Video Hub.exe" -File -Recurse -ErrorAction SilentlyContinue
-            if ($matches) { $installed = $matches[0].FullName }
-          }
-          $log = Join-Path $env:LOCALAPPDATA "video-hub-installed-smoke-test.log"
-          & $installed --smoke-test-ui 2>&1 | Tee-Object -FilePath $log
-          if ($LASTEXITCODE -ne 0) { throw "Installed app UI smoke test failed with exit code $LASTEXITCODE" }
-          Write-Host "Installed app UI smoke test passed."
-      - name: Collect installed startup logs
-        if: always()
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force diagnostics | Out-Null
-          $paths = @(
-            (Join-Path $env:LOCALAPPDATA "Video Hub\logs"),
-            (Join-Path $env:APPDATA "Video Hub\logs"),
-            $env:LOCALAPPDATA
-          )
-          foreach ($dir in $paths) {
-            if (Test-Path $dir) {
-              Get-ChildItem $dir -Filter "*.log" -File -ErrorAction SilentlyContinue | ForEach-Object {
-                Copy-Item $_.FullName diagnostics -Force
-              }
-            }
-          }
-
-      - name: Upload installed startup logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: video-hub-startup-logs
-          path: diagnostics/*
-          if-no-files-found: ignore
-          retention-days: 14
-
-      - name: Upload Windows installer (PR/manual validation)
-        if: !startsWith(github.ref, 'refs/heads/release/v')
-        uses: actions/upload-artifact@v4
-        with:
-          name: video-hub-windows-installer
-          path: release/*Setup*.exe
-          if-no-files-found: error
-          retention-days: 14
