@@ -1,12 +1,15 @@
 name: Windows Desktop Build
 
 on:
+  push:
+    branches:
+      - 'release/v*'
   pull_request:
     branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows:
@@ -44,7 +47,14 @@ jobs:
         shell: pwsh
         run: npx electron desktop/main.cjs --smoke-test
 
-      - name: Package Windows installer
+      - name: Package Windows installer and publish Stable release
+        if: startsWith(github.ref, 'refs/heads/release/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run desktop:release
+
+      - name: Package Windows installer (PR/manual validation)
+        if: !startsWith(github.ref, 'refs/heads/release/v')
         run: npx electron-builder --win nsis --publish never
 
       - name: Verify installer
@@ -108,7 +118,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: Upload Windows installer
+      - name: Upload Windows installer (PR/manual validation)
+        if: !startsWith(github.ref, 'refs/heads/release/v')
         uses: actions/upload-artifact@v4
         with:
           name: video-hub-windows-installer
