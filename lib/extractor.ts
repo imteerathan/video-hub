@@ -91,7 +91,7 @@ function titleFromUrl(url: string) {
   try {
     const last = decodeURIComponent(new URL(url).pathname.split('/').filter(Boolean).pop() || '');
     const cleaned = last
-      .replace(/\.(mp4|m3u8|mpd)$/i, '')
+      .replace(/\.(mp4|m3u8|mpd|webm|ogg)$/i, '')
       .replace(/[-_.]+/g, ' ')
       .replace(/\b\d{8,}\b/g, '')
       .replace(/\s+/g, ' ')
@@ -193,18 +193,18 @@ export async function extractPublicVideoSources(
     try {
       if (new URL(scriptUrl).origin !== pageOrigin) continue;
       const script = await safeFetchText(scriptUrl);
-      if (script.response.ok) texts.push(script.text);
+      if (script.response.ok && script.text.length <= 2_000_000) texts.push(script.text);
     } catch {}
   }
 
   const out: ExtractedVideo[] = [];
   const seen = new Set<string>();
-  const push = (url: string, title = '', thumb?: string) => {
+  const push = (url: string, title = '', thumb?: string, contextHtml = html) => {
     const x = absolute(res.url, url);
     if (!x || seen.has(x)) return;
     seen.add(x);
 
-    const context = nearby(html, url);
+    const context = nearby(contextHtml, url);
     const resolvedThumb =
       absolute(res.url, thumb) ||
       absolute(res.url, context.thumbnail) ||
@@ -255,7 +255,7 @@ export async function extractPublicVideoSources(
 
   for (const text of texts) {
     for (const url of extractMediaUrls(text)) {
-      push(url, '', undefined);
+      push(url, '', undefined, text);
     }
   }
 
