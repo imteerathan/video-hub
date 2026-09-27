@@ -1,6 +1,6 @@
 {
   "name": "video-hub",
-  "version": "1.1.10-desktop",
+  "version": "1.1.11",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -12,7 +12,8 @@
     "desktop:dev": "node scripts/desktop-dev.cjs",
     "desktop:build": "next build",
     "desktop:package": "electron-builder --win nsis portable --publish never",
-    "desktop:prepare": "node scripts/prepare-desktop.cjs"
+    "desktop:prepare": "node scripts/prepare-desktop.cjs",
+    "desktop:release": "electron-builder --win nsis --publish always"
   },
   "dependencies": {
     "@prisma/client": "^6.16.0",
@@ -86,8 +87,22 @@
         "from": "node_modules/.prisma",
         "to": "node_modules/.prisma"
       }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "imteerathan",
+        "repo": "video-hub",
+        "releaseType": "release",
+        "publishAutoUpdate": true,
+        "vPrefixedTagName": true
+      }
     ]
   },
   "description": "Personal video catalog and player desktop application",
-  "author": "Video Hub"
+  "author": "Video Hub",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/imteerathan/video-hub.git"
+  }
 }
