@@ -199,7 +199,7 @@ export default function Sources() {
     setActionStatus({ busy: true, message: 'Scan started for “' + sourceName + '”.', tone: 'info' });
 
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 30 * 60_000);
+    const timeout = globalThis.setTimeout(() => controller.abort(), 30 * 60_000);
     let requestDone = false;
 
     try {
@@ -281,7 +281,7 @@ export default function Sources() {
       }));
       setActionStatus({ busy: false, message: 'Scan failed for “' + sourceName + '”.', tone: 'error' });
     } finally {
-      window.clearTimeout(timeout);
+      globalThis.clearTimeout(timeout);
     }
   }
 
