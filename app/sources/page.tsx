@@ -102,6 +102,7 @@ export default function Sources() {
   const [saving, setSaving] = useState(false);
   const [scanStates, setScanStates] = useState<Record<string, ScanStatus | undefined>>({});
   const [scanResults, setScanResults] = useState<Record<string, ScanResult | undefined>>({});
+  const [scanAllBusy, setScanAllBusy] = useState(false);
   const [actionStatus, setActionStatus] = useState<ActionStatus>({
     busy: true,
     message: 'Loading Sources and Categories…',
@@ -172,6 +173,47 @@ export default function Sources() {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function monitorScanBatch(items: { id: string; name: string }[]) {
+    const pending = new Set(items.map((x) => x.id));
+    const seeded: Record<string, ScanStatus | undefined> = {};
+    for (const item of items) {
+      seeded[item.id] = {
+        sourceId: item.id,
+        sourceName: item.name,
+        phase: 'queued',
+        percent: 2,
+        message: 'Scan queued…',
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        discovered: 0,
+        matched: 0,
+        created: 0,
+        updated: 0,
+        skippedByDate: 0,
+        unmatched: 0,
+        duplicates: 0,
+      };
+    }
+    setScanStates((current) => ({ ...current, ...seeded }));
+
+    while (pending.size > 0) {
+      await Promise.all(
+        [...pending].map(async (id) => {
+          try {
+            const sr = await fetch('/api/scan-source/status?sourceId=' + encodeURIComponent(id), { cache: 'no-store' });
+            if (!sr.ok) return;
+            const sj = await sr.json();
+            if (!sj.status) return;
+            setScanStates((current) => ({ ...current, [id]: sj.status }));
+            if (isTerminal(sj.status)) pending.delete(id);
+          } catch {}
+        }),
+      );
+      if (pending.size > 0) await sleep(500);
+    }
+    await load();
   }
 
   async function scan(id: string, sourceName: string) {
@@ -398,9 +440,40 @@ export default function Sources() {
           <div className="eyebrow">CONTENT SOURCES</div>
           <h1>Sources</h1>
           <p className="muted">
-            Add websites once. Edit their scan policy, categories, or enabled state at any time.
+            Add websites once. New Sources auto-scan immediately. Use Scan All to refresh every enabled Source.
           </p>
         </div>
+        <button
+          className="btn"
+          onClick={async () => {
+            if (scanAllBusy) return;
+            const enabledSources = sources.filter((s) => s.enabled);
+            if (!enabledSources.length) {
+              setActionStatus({ busy: false, message: 'No enabled Sources to scan.', tone: 'info' });
+              return;
+            }
+            setScanAllBusy(true);
+            setError('');
+            setActionStatus({ busy: true, message: 'Starting Scan All for ' + enabledSources.length + ' Sources…', tone: 'info' });
+            try {
+              const r = await fetch('/api/scan-all-sources', { method: 'POST', cache: 'no-store' });
+              const j = await r.json().catch(() => ({}));
+              if (!r.ok) throw new Error(j.error || 'Scan All failed');
+              const items = Array.isArray(j.sources) ? j.sources : enabledSources.map((s) => ({ id: s.id, name: s.name }));
+              await monitorScanBatch(items);
+              setActionStatus({ busy: false, message: 'Scan All finished. Library is up to date.', tone: 'ok' });
+            } catch (e) {
+              const message = e instanceof Error ? e.message : 'Scan All failed';
+              setError(message);
+              setActionStatus({ busy: false, message, tone: 'error' });
+            } finally {
+              setScanAllBusy(false);
+            }
+          }}
+          disabled={scanAllBusy || !sources.some((s) => s.enabled)}
+        >
+          {scanAllBusy ? 'Scanning All…' : 'Scan All'}
+        </button>
       </div>
 
       <section className={'action-status ' + actionStatus.tone + (actionStatus.busy ? ' busy' : '')}>
