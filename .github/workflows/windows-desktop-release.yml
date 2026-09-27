@@ -2,14 +2,15 @@ name: Windows Desktop Release
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: windows-release-${{ github.ref_name }}
+  group: windows-release-main
   cancel-in-progress: false
 
 jobs:
@@ -18,7 +19,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - name: Checkout tagged source
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -30,46 +31,95 @@ jobs:
           cache: npm
           cache-dependency-path: package.json
 
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
-
-      - name: Validate release tag matches package version
+      - name: Determine release version
+        id: release_gate
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
-          $packageVersion = node -p "require('./package.json').version"
-          Write-Host "Git tag: $tagVersion"
-          Write-Host "Package version: $packageVersion"
-          if ($tagVersion -ne $packageVersion) {
-            throw "Release tag v$tagVersion does not match package.json version $packageVersion"
+          $version = node -p "require('./package.json').version"
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "package.json version must be stable semver (x.y.z) for desktop releases. Found: $version"
           }
 
+          $tag = "v$version"
+          Write-Host "Release candidate: $tag"
+
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $tag already exists. No new desktop build is required."
+            "should_release=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            exit 0
+          }
+
+          Write-Host "Release $tag does not exist. Building and publishing it."
+          "should_release=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Install dependencies
+        if: steps.release_gate.outputs.should_release == 'true'
+        run: npm install --no-audit --no-fund
+
+      - name: Verify desktop updater dependency
+        if: steps.release_gate.outputs.should_release == 'true'
+        shell: pwsh
+        run: |
+          node -e "const u=require('electron-updater'); if(!u.NsisUpdater) throw new Error('electron-updater NsisUpdater export is missing'); console.log('electron-updater:', require('electron-updater/package.json').version)"
+
+      - name: Validate GitHub updater configuration
+        if: steps.release_gate.outputs.should_release == 'true'
+        shell: pwsh
+        run: |
+          $cfg = Get-Content desktop/update-config.cjs -Raw
+          if ($cfg -notmatch "provider: 'github'") { throw "Desktop updater provider is not GitHub." }
+          if ($cfg -notmatch "owner: 'imteerathan'") { throw "Desktop updater owner is incorrect." }
+          if ($cfg -notmatch "repo: 'video-hub'") { throw "Desktop updater repo is incorrect." }
+
       - name: Generate Prisma Client
+        if: steps.release_gate.outputs.should_release == 'true'
         run: npx prisma generate
 
       - name: Build Next.js
+        if: steps.release_gate.outputs.should_release == 'true'
         run: npm run build
 
       - name: Prepare Prisma artifacts for standalone runtime
+        if: steps.release_gate.outputs.should_release == 'true'
         run: npm run desktop:prepare
 
       - name: Desktop smoke test
+        if: steps.release_gate.outputs.should_release == 'true'
         shell: pwsh
         run: npx electron desktop/main.cjs --smoke-test
 
       - name: Publish Windows release to GitHub
+        if: steps.release_gate.outputs.should_release == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win nsis --publish always
+        run: npm run desktop:release
 
       - name: Verify published release assets
+        if: steps.release_gate.outputs.should_release == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = $env:GITHUB_REF_NAME
-          $assets = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft,isPrerelease,assets --jq '.assets[].name'
+          $tag = '${{ steps.release_gate.outputs.tag }}'
+          $releaseState = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft,isPrerelease
+          Write-Host "Release state: $releaseState"
+
+          if ($releaseState -match '"isDraft":true') {
+            throw "Release is still draft."
+          }
+          if ($releaseState -match '"isPrerelease":true') {
+            throw "Release is prerelease."
+          }
+
+          $assets = gh release view $tag --repo $env:GITHUB_REPOSITORY --json assets --jq '.assets[].name'
           Write-Host "Published assets:"
           $assets | ForEach-Object { Write-Host " - $_" }
 
@@ -83,11 +133,6 @@ jobs:
             throw "NSIS blockmap was not published."
           }
 
-          $releaseState = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft,isPrerelease
-          Write-Host "Release state: $releaseState"
-          if ($releaseState -match '"isDraft":true') {
-            throw "Release is still draft; public updater clients cannot reliably consume draft releases."
-          }
-          if ($releaseState -match '"isPrerelease":true') {
-            throw "Release is prerelease; stable Video Hub clients must receive stable releases only."
-          }
+      - name: Release skipped
+        if: steps.release_gate.outputs.should_release != 'true'
+        run: echo "Current package version already has a GitHub Release. No new installer was built."
