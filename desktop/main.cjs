@@ -354,6 +354,8 @@ async function createAutoUpdater() {
     });
 
     updater.autoDownload = true;
+    // Keep NSIS differential updates enabled. electron-updater will fall back to a full installer only when a delta cannot be safely built.
+    updater.disableDifferentialDownload = false;
     // electron-updater 6.x uses autoInstallOnAppQuit. Keep installation explicit so closing the app never silently removes the current build.
     if ('autoInstallOnAppQuit' in updater) updater.autoInstallOnAppQuit = false;
     updater.allowDowngrade = false;
@@ -449,6 +451,8 @@ async function createAutoUpdater() {
       channel: config.channel,
       currentVersion: app.getVersion(),
       autoDownload: updater.autoDownload,
+      disableDifferentialDownload: updater.disableDifferentialDownload,
+      autoInstallOnAppQuit: updater.autoInstallOnAppQuit,
       autoInstallEvent: updater.autoInstallEvent,
     });
 
