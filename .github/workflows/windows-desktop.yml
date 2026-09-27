@@ -3,7 +3,11 @@ name: Video Hub Windows Release
 on:
   push:
     branches:
-      - 'release/v1.1.15'
+      - 'release/v1.1.17'
+
+concurrency:
+  group: video-hub-windows-release-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -31,7 +35,9 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
-            const tag = 'v1.1.16';
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const tag = 'v' + pkg.version;
             const sha = context.sha;
             try {
               const existing = await github.rest.git.getRef({
