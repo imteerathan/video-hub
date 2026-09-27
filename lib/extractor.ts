@@ -37,10 +37,9 @@ function dateFromHtml(html: string) {
 }
 
 function metaContent(html: string, key: string) {
-  const escaped = key.replace(/[-/\\^$*+?.()|[\\]{}]/g, '\\$&');
   const patterns = [
-    new RegExp("<meta[^>]+(?:property|name)=['\\"]" + escaped + "['\\"][^>]+content=['\\"]([^'\\"]+)['\\"]", 'i'),
-    new RegExp("<meta[^>]+content=['\\"]([^'\\"]+)['\\"][^>]+(?:property|name)=['\\"]" + escaped + "['\\"]", 'i'),
+    new RegExp("<meta[^>]+(?:property|name)=['\\"]" + key + "['\\"][^>]+content=['\\"]([^'\\"]+)['\\"]", 'i'),
+    new RegExp("<meta[^>]+content=['\\"]([^'\\"]+)['\\"][^>]+(?:property|name)=['\\"]" + key + "['\\"]", 'i'),
   ];
   for (const re of patterns) {
     const m = re.exec(html);
@@ -59,11 +58,9 @@ function decodeHtml(value: string) {
 }
 
 function getAttr(tag: string, name: string) {
-  const escaped = name.replace(/[.*+?^$()|[\\]\\]/g, '\\$&');
-  const m = new RegExp('(?:^|\\s)' + escaped + '\\s*=\\s*["\\']([^"\\']+)["\\']', 'i').exec(tag);
+  const m = new RegExp(name + '\\s*=\\s*["\\']([^"\\']+)["\\']', 'i').exec(tag);
   return m?.[1];
 }
-
 function tagTitle(tag: string) {
   return decodeHtml(
     (
