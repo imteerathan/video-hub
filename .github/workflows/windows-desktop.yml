@@ -28,6 +28,11 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
+      - name: Verify desktop updater dependency
+        shell: pwsh
+        run: |
+          node -e "const u=require('electron-updater'); if(!u.NsisUpdater) throw new Error('electron-updater NsisUpdater export is missing'); console.log('electron-updater:', require('electron-updater/package.json').version)"
+
       - name: Generate Prisma Client
         run: npx prisma generate
 
