@@ -1,6 +1,6 @@
 {
   "name": "video-hub",
-  "version": "1.1.13",
+  "version": "1.1.14",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -95,7 +95,7 @@
         "provider": "github",
         "owner": "imteerathan",
         "repo": "video-hub",
-        "releaseType": "draft",
+        "releaseType": "release",
         "publishAutoUpdate": true,
         "vPrefixedTagName": true
       }
