@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: windows-release-main
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   release-windows:
@@ -46,8 +46,9 @@ jobs:
 
           $existing = gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName,isDraft | ConvertFrom-Json
           $match = $existing | Where-Object { $_.tagName -eq $tag } | Select-Object -First 1
-          $needsBuild = $true
-          $needsPublish = $true
+          $shouldBuild = $true
+          $createRelease = $true
+          $finalizeRelease = $true
 
           if ($match) {
             $release = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft,assets | ConvertFrom-Json
@@ -55,19 +56,25 @@ jobs:
             $hasLatest = $assetNames -contains 'latest.yml'
             $hasInstaller = [bool]($assetNames | Where-Object { $_ -match 'Setup.*\.exe$' })
             $hasBlockmap = [bool]($assetNames | Where-Object { $_ -match 'Setup.*\.exe\.blockmap$' })
+
             if (-not $release.isDraft -and $hasLatest -and $hasInstaller -and $hasBlockmap) {
               Write-Host "Release $tag is complete. Nothing to publish."
-              $needsBuild = $false
-              $needsPublish = $false
+              $shouldBuild = $false
+              $createRelease = $false
+              $finalizeRelease = $false
             } else {
-              Write-Host "Release $tag is missing release assets or is still draft. Rebuilding."
+              Write-Host "Release $tag exists but is incomplete. Rebuilding and uploading to the existing release."
+              $shouldBuild = $true
+              $createRelease = $false
+              $finalizeRelease = [bool]$release.isDraft
             }
           } else {
-            Write-Host "Release $tag does not exist. A draft will be created before upload."
+            Write-Host "Release $tag does not exist. Building and creating a draft release."
           }
 
-          "should_build=$($needsBuild)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "should_publish=$($needsPublish)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "should_build=$shouldBuild" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "create_release=$createRelease" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "finalize_release=$finalizeRelease" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
@@ -106,24 +113,24 @@ jobs:
         shell: pwsh
         run: npx electron desktop/main.cjs --smoke-test
 
-      - name: Build Windows installer and metadata
+      - name: Build Windows installer
         if: steps.release_gate.outputs.should_build == 'true'
         shell: pwsh
         run: npx electron-builder --win nsis --publish never
 
-      - name: Verify local release files
+      - name: Create deterministic updater metadata
         if: steps.release_gate.outputs.should_build == 'true'
         shell: pwsh
         run: |
           $installer = Get-ChildItem release -Filter 'Video-Hub-Setup-*.exe' -File | Where-Object { $_.Name -notlike '*uninstaller*' } | Select-Object -First 1
           if (-not $installer) { throw 'Windows installer was not generated.' }
-          $blockmap = [System.IO.FileInfo]("$($installer.FullName).blockmap")
-          if (-not $blockmap.Exists) { throw 'Windows installer blockmap was not generated.' }
+          $blockmap = Get-Item "$($installer.FullName).blockmap" -ErrorAction Stop
+          if (-not $blockmap) { throw 'Windows installer blockmap was not generated.' }
           if ($installer.Length -lt 10000000) { throw "Installer size looks invalid: $($installer.Length) bytes" }
 
-          $hash = [System.Security.Cryptography.SHA512]::Create()
-          try { $digest = [Convert]::ToBase64String($hash.ComputeHash([System.IO.File]::ReadAllBytes($installer.FullName))) } finally { $hash.Dispose() }
-          $yml = @(
+          $sha512 = [System.Security.Cryptography.SHA512]::Create()
+          try { $digest = [Convert]::ToBase64String($sha512.ComputeHash([System.IO.File]::ReadAllBytes($installer.FullName))) } finally { $sha512.Dispose() }
+          $metadata = @(
             "version: ${{ steps.release_gate.outputs.version }}",
             "files:",
             "  - url: $($installer.Name)",
@@ -133,14 +140,10 @@ jobs:
             "sha512: $digest",
             "releaseDate: $([DateTime]::UtcNow.ToString('o'))"
           )
-          $ymlText = ($yml -join "`n") + "`n"
-          Set-Content -Path 'release/latest.yml' -Value $ymlText -Encoding UTF8
-          Write-Host "Installer: $($installer.FullName)"
-          Write-Host "Blockmap: $($blockmap.FullName)"
-          Write-Host "Metadata: release/latest.yml"
+          Set-Content -Path 'release/latest.yml' -Value (($metadata -join "`n") + "`n") -Encoding UTF8
 
       - name: Ensure GitHub draft release exists
-        if: steps.release_gate.outputs.should_build == 'true' && steps.release_gate.outputs.should_publish == 'true'
+        if: steps.release_gate.outputs.should_build == 'true' && steps.release_gate.outputs.create_release == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -149,19 +152,19 @@ jobs:
           $version = '${{ steps.release_gate.outputs.version }}'
           gh release create $tag --repo $env:GITHUB_REPOSITORY --draft --title "Video Hub $version" --target $env:GITHUB_SHA
 
-      - name: Upload Windows updater assets
-        if: steps.release_gate.outputs.should_build == 'true' && steps.release_gate.outputs.should_publish == 'true'
+      - name: Upload updater assets
+        if: steps.release_gate.outputs.should_build == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = '${{ steps.release_gate.outputs.tag }}'
           $installer = Get-ChildItem release -Filter 'Video-Hub-Setup-*.exe' -File | Where-Object { $_.Name -notlike '*uninstaller*' } | Select-Object -First 1
-          $blockmap = [System.IO.FileInfo]("$($installer.FullName).blockmap")
+          $blockmap = Get-Item "$($installer.FullName).blockmap" -ErrorAction Stop
           gh release upload $tag $installer.FullName $blockmap.FullName 'release/latest.yml' --repo $env:GITHUB_REPOSITORY --clobber
 
       - name: Finalize stable GitHub Release
-        if: steps.release_gate.outputs.should_build == 'true' && steps.release_gate.outputs.should_publish == 'true'
+        if: steps.release_gate.outputs.finalize_release == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
