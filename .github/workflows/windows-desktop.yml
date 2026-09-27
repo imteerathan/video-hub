@@ -54,7 +54,7 @@ jobs:
         run: npm run desktop:release
 
       - name: Package Windows installer (PR/manual validation)
-        if: !startsWith(github.ref, 'refs/heads/release/v')
+        if: "!startsWith(github.ref, 'refs/heads/release/v')"
         run: npx electron-builder --win nsis --publish never
 
       - name: Verify installer
