@@ -163,11 +163,28 @@ export default function Sources() {
         setActionStatus({ busy: false, message: j.error || 'Save failed.', tone: 'error' });
         return;
       }
+      const createdSourceId = String(j.id || '');
+      const createdSourceName = String(j.name || name || 'New Source');
       setName('');
       setUrl('');
       setSelected([]);
-      setActionStatus({ busy: false, message: 'Source saved successfully.', tone: 'ok' });
+      setActionStatus({
+        busy: true,
+        message: 'Source saved. Auto Scan started for “' + createdSourceName + '”.',
+        tone: 'info',
+      });
       await load();
+      if (createdSourceId) {
+        void monitorScanBatch([{ id: createdSourceId, name: createdSourceName }]).then(() => {
+          setActionStatus({
+            busy: false,
+            message: 'Auto Scan finished for “' + createdSourceName + '”. Library is up to date.',
+            tone: 'ok',
+          });
+        });
+      } else {
+        setActionStatus({ busy: false, message: 'Source saved successfully.', tone: 'ok' });
+      }
     } catch {
       setActionStatus({ busy: false, message: 'Save failed. Check the app connection.', tone: 'error' });
     } finally {
