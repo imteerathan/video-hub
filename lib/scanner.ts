@@ -81,6 +81,7 @@ export async function scanSource(sourceId: string, userId: string) {
     let skippedByDate = 0;
     let unmatched = 0;
     let duplicates = 0;
+    const hasRules = source.rules.length > 0;
 
     setScanStatus(userId, sourceId, {
       phase: 'matching',
@@ -103,11 +104,15 @@ export async function scanSource(sourceId: string, userId: string) {
       if (publishedAt && publishedAt < cutoff) {
         skippedByDate++;
       } else {
-        const hitRules = source.rules.filter((x) =>
-          matches(title + ' ' + v.url, { mode: x.rule.mode, keywords: x.rule.keywords }),
-        );
+        const hitRules = hasRules
+          ? source.rules.filter((x) =>
+              matches(title + ' ' + v.url, { mode: x.rule.mode, keywords: x.rule.keywords }),
+            )
+          : [];
 
-        if (!hitRules.length) {
+        // A Source with no Search Rules imports every discovered media source.
+        // Search Rules are an optional filter, not a prerequisite for Library import.
+        if (hasRules && !hitRules.length) {
           unmatched++;
         } else {
           matched++;
@@ -276,7 +281,7 @@ export async function scanSource(sourceId: string, userId: string) {
       videos.length === 0
         ? 'Scan complete. The page returned 0 directly discoverable media sources. The Scanner currently looks for <video>, <source>, and direct MP4/HLS/DASH URLs in the HTML.'
         : source.rules.length === 0
-          ? 'Scan complete. Media was found, but this Source has no active Search Rules, so nothing was matched into the Library.'
+          ? 'Scan complete. Media was found and imported because this Source has no active Search Rules.'
           : matched === 0
             ? 'Scan complete. Media was found, but 0 items matched the active Search Rules or scan window.'
             : 'Scan complete. ' + matched + ' media source' + (matched === 1 ? '' : 's') + ' matched the active Search Rules.';
