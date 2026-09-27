@@ -188,6 +188,43 @@ export async function extractPublicVideoSources(
 
   const texts = [html];
   const pageOrigin = new URL(res.url).origin;
+
+  // Some players, including common HLS demos, pass the manifest in the page URL
+  // (for example ?src=<manifest>) and populate the player after JavaScript runs.
+  // Treat those explicit media-looking query parameters as scanner inputs too.
+  const pageQuery = new URL(res.url).searchParams;
+  for (const key of ['src', 'source', 'stream', 'video', 'manifest', 'playlist', 'url']) {
+    const value = pageQuery.get(key);
+    if (value && /(?:\.m3u8|\.mpd|\.mp4|\.webm|\.ogg)(?:[?#]|$)/i.test(value)) {
+      texts.push(value);
+    }
+  }
+
+  // Follow a small number of same-origin iframes. This covers preview/player
+  // pages whose actual <video> element lives inside a nested document.
+  const iframeUrls = [...html.matchAll(/<iframe\\b[^>]+src=["']([^"']+)["'][^>]*>/gi)]
+    .map((m) => absolute(res.url, decodeScriptValue(m[1])))
+    .filter((u): u is string => !!u && new URL(u).origin === pageOrigin)
+    .slice(0, 4);
+
+  for (const iframeUrl of iframeUrls) {
+    try {
+      const frame = await safeFetchText(iframeUrl);
+      if (frame.response.ok && frame.text.length <= 4_000_000) {
+        texts.push(frame.text);
+        const frameQuery = new URL(frame.url).searchParams;
+        for (const key of ['src', 'source', 'stream', 'video', 'manifest', 'playlist', 'url']) {
+          const value = frameQuery.get(key);
+          if (value && /(?:\.m3u8|\.mpd|\.mp4|\.webm|\.ogg)(?:[?#]|$)/i.test(value)) {
+            texts.push(value);
+          }
+        }
+      }
+    } catch {
+      // A broken iframe must not invalidate the parent source scan.
+    }
+  }
+
   const scriptUrls = extractScriptUrls(html, res.url);
   for (const scriptUrl of scriptUrls) {
     try {
