@@ -354,7 +354,8 @@ async function createAutoUpdater() {
     });
 
     updater.autoDownload = true;
-    updater.autoInstallEvent = 'onNextLaunch';
+    // electron-updater 6.x uses autoInstallOnAppQuit. Keep installation explicit so closing the app never silently removes the current build.
+    if ('autoInstallOnAppQuit' in updater) updater.autoInstallOnAppQuit = false;
     updater.allowDowngrade = false;
     updater.allowPrerelease = false;
     updater.autoRunAppAfterInstall = true;
@@ -488,7 +489,8 @@ async function checkForUpdates() {
 async function installUpdateNow() {
   if (!updater || !updateState.readyToInstall) return { ...snapshotUpdateState(), installed: false };
   setUpdateState({ status: 'installing' });
-  updater.quitAndInstall({ isSilent: true, isForceRunAfter: true });
+  // electron-updater 6.8.x uses positional arguments. The previous object form made the install silent without relaunching the app.
+  updater.quitAndInstall(true, true);
   return { ...snapshotUpdateState(), installed: true };
 }
 
