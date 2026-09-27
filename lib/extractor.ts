@@ -174,7 +174,7 @@ export async function extractPublicVideoSources(
   let m: RegExpExecArray | null;
   while ((m = videoRe.exec(html))) {
     const tag = m[0];
-    const elementTitle = tagTitle(tag) || pageTitle;
+    const elementTitle = tagTitle(tag);
     const src = m[1] || /(?:data-src|data-video)=["']([^"']+)["']/i.exec(tag)?.[1];
     const poster = getAttr(tag, 'poster') || pageThumbnail;
     if (src) push(src, elementTitle, poster);
