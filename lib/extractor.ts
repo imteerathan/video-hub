@@ -38,8 +38,8 @@ function dateFromHtml(html: string) {
 
 function metaContent(html: string, key: string) {
   const patterns = [
-    new RegExp("<meta[^>]+(?:property|name)=['\\"]" + key + "['\\"][^>]+content=['\\"]([^'\\"]+)['\\"]", 'i'),
-    new RegExp("<meta[^>]+content=['\\"]([^'\\"]+)['\\"][^>]+(?:property|name)=['\\"]" + key + "['\\"]", 'i'),
+    new RegExp("<meta[^>]+(?:property|name)=['\\x22]" + key + "['\\x22][^>]+content=['\\x22]([^'\\x22]+)['\\x22]", 'i'),
+    new RegExp("<meta[^>]+content=['\\x22]([^'\\x22]+)['\\x22][^>]+(?:property|name)=['\\x22]" + key + "['\\x22]", 'i'),
   ];
   for (const re of patterns) {
     const m = re.exec(html);
@@ -58,7 +58,7 @@ function decodeHtml(value: string) {
 }
 
 function getAttr(tag: string, name: string) {
-  const m = new RegExp(name + '\\s*=\\s*["\\']([^"\\']+)["\\']', 'i').exec(tag);
+  const m = new RegExp(name + '\\s*=\\s*[\\x22\\x27]([^\\x22\\x27]+)[\\x22\\x27]', 'i').exec(tag);
   return m?.[1];
 }
 function tagTitle(tag: string) {
