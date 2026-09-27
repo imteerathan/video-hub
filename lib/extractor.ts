@@ -39,8 +39,8 @@ function dateFromHtml(html: string) {
 function metaContent(html: string, key: string) {
   const escaped = key.replace(/[-/\\^$*+?.()|[\\]{}]/g, '\\$&');
   const patterns = [
-    new RegExp('<meta[^>]+(?:property|name)=["\\']' + escaped + '["\\'][^>]+content=["\\']([^"\\']+)["\\']', 'i'),
-    new RegExp('<meta[^>]+content=["\\']([^"\\']+)["\\'][^>]+(?:property|name)=["\\']' + escaped + '["\\']', 'i'),
+    new RegExp("<meta[^>]+(?:property|name)=['\\"]" + escaped + "['\\"][^>]+content=['\\"]([^'\\"]+)['\\"]", 'i'),
+    new RegExp("<meta[^>]+content=['\\"]([^'\\"]+)['\\"][^>]+(?:property|name)=['\\"]" + escaped + "['\\"]", 'i'),
   ];
   for (const re of patterns) {
     const m = re.exec(html);
