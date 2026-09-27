@@ -45,8 +45,8 @@ jobs:
           $tag = "v$version"
           Write-Host "Release candidate: $tag"
 
-          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) {
+          $existingTags = gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName --jq '.[].tagName'
+          if ($existingTags -contains $tag) {
             Write-Host "Release $tag already exists. No new desktop build is required."
             "should_release=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
