@@ -3,7 +3,7 @@ name: Video Hub Windows Release
 on:
   push:
     branches:
-      - 'release/v1.1.14'
+      - 'release/v1.1.15'
 
 permissions:
   contents: write
