@@ -41,12 +41,13 @@ jobs:
           if ($version -notmatch '^\d+\.\d+\.\d+$') {
             throw "package.json version must be stable semver (x.y.z). Found: $version"
           }
-
           $tag = "v$version"
           Write-Host "Release candidate: $tag"
 
           $existing = gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName,isDraft | ConvertFrom-Json
           $match = $existing | Where-Object { $_.tagName -eq $tag } | Select-Object -First 1
+          $needsBuild = $true
+          $needsPublish = $true
 
           if ($match) {
             $release = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft,assets | ConvertFrom-Json
@@ -54,70 +55,113 @@ jobs:
             $hasLatest = $assetNames -contains 'latest.yml'
             $hasInstaller = [bool]($assetNames | Where-Object { $_ -match 'Setup.*\.exe$' })
             $hasBlockmap = [bool]($assetNames | Where-Object { $_ -match 'Setup.*\.exe\.blockmap$' })
-
-            if ($release.isDraft -or -not ($hasLatest -and $hasInstaller -and $hasBlockmap)) {
-              Write-Host "Release $tag exists but is incomplete. Repairing/publishing missing assets."
-              "should_release=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-              "finalize_release=$($release.isDraft)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            if (-not $release.isDraft -and $hasLatest -and $hasInstaller -and $hasBlockmap) {
+              Write-Host "Release $tag is complete. Nothing to publish."
+              $needsBuild = $false
+              $needsPublish = $false
             } else {
-              Write-Host "Release $tag is complete. No new desktop build required."
-              "should_release=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-              "finalize_release=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              Write-Host "Release $tag is missing release assets or is still draft. Rebuilding."
             }
           } else {
-            Write-Host "Release $tag does not exist. Building and publishing it."
-            "should_release=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "finalize_release=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Host "Release $tag does not exist. A draft will be created before upload."
           }
 
+          "should_build=$($needsBuild)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "should_publish=$($needsPublish)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Install dependencies
-        if: steps.release_gate.outputs.should_release == 'true'
+        if: steps.release_gate.outputs.should_build == 'true'
         run: npm install --no-audit --no-fund
 
       - name: Verify desktop updater dependency
-        if: steps.release_gate.outputs.should_release == 'true'
+        if: steps.release_gate.outputs.should_build == 'true'
         shell: pwsh
-        run: |
-          node -e "const u=require('electron-updater'); if(!u.NsisUpdater) throw new Error('electron-updater NsisUpdater export is missing'); console.log('electron-updater:', require('electron-updater/package.json').version)"
+        run: node -e "const u=require('electron-updater'); if(!u.NsisUpdater) throw new Error('electron-updater NsisUpdater export is missing'); console.log('electron-updater:', require('electron-updater/package.json').version)"
 
-      - name: Validate GitHub updater configuration
-        if: steps.release_gate.outputs.should_release == 'true'
+      - name: Validate updater target
+        if: steps.release_gate.outputs.should_build == 'true'
         shell: pwsh
         run: |
           $cfg = Get-Content desktop/update-config.cjs -Raw
-          if ($cfg -notmatch "provider: 'github'") { throw "Desktop updater provider is not GitHub." }
-          if ($cfg -notmatch "GITHUB_OWNER = 'imteerathan'") { throw "Desktop updater owner is incorrect." }
-          if ($cfg -notmatch "GITHUB_REPO = 'video-hub'") { throw "Desktop updater repo is incorrect." }
+          if ($cfg -notmatch "provider: 'github'") { throw "Updater provider is not GitHub." }
+          if ($cfg -notmatch "GITHUB_OWNER = 'imteerathan'") { throw "Updater owner is incorrect." }
+          if ($cfg -notmatch "GITHUB_REPO = 'video-hub'") { throw "Updater repo is incorrect." }
 
       - name: Generate Prisma Client
-        if: steps.release_gate.outputs.should_release == 'true'
+        if: steps.release_gate.outputs.should_build == 'true'
         run: npx prisma generate
 
       - name: Build Next.js
-        if: steps.release_gate.outputs.should_release == 'true'
+        if: steps.release_gate.outputs.should_build == 'true'
         run: npm run build
 
       - name: Prepare Prisma artifacts for standalone runtime
-        if: steps.release_gate.outputs.should_release == 'true'
+        if: steps.release_gate.outputs.should_build == 'true'
         run: npm run desktop:prepare
 
       - name: Desktop smoke test
-        if: steps.release_gate.outputs.should_release == 'true'
+        if: steps.release_gate.outputs.should_build == 'true'
         shell: pwsh
         run: npx electron desktop/main.cjs --smoke-test
 
-      - name: Publish Windows release assets
-        if: steps.release_gate.outputs.should_release == 'true'
+      - name: Build Windows installer and metadata
+        if: steps.release_gate.outputs.should_build == 'true'
+        shell: pwsh
+        run: npx electron-builder --win nsis --publish never
+
+      - name: Verify local release files
+        if: steps.release_gate.outputs.should_build == 'true'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem release -Filter 'Video-Hub-Setup-*.exe' -File | Where-Object { $_.Name -notlike '*uninstaller*' } | Select-Object -First 1
+          if (-not $installer) { throw 'Windows installer was not generated.' }
+          $blockmap = [System.IO.FileInfo]("$($installer.FullName).blockmap")
+          if (-not $blockmap.Exists) { throw 'Windows installer blockmap was not generated.' }
+          if ($installer.Length -lt 10000000) { throw "Installer size looks invalid: $($installer.Length) bytes" }
+
+          $hash = [System.Security.Cryptography.SHA512]::Create()
+          try { $digest = [Convert]::ToBase64String($hash.ComputeHash([System.IO.File]::ReadAllBytes($installer.FullName))) } finally { $hash.Dispose() }
+          $yml = @(
+            "version: ${{ steps.release_gate.outputs.version }}",
+            "files:",
+            "  - url: $($installer.Name)",
+            "    sha512: $digest",
+            "    size: $($installer.Length)",
+            "path: $($installer.Name)",
+            "sha512: $digest",
+            "releaseDate: $([DateTime]::UtcNow.ToString('o'))"
+          )
+          $ymlText = ($yml -join "`n") + "`n"
+          Set-Content -Path 'release/latest.yml' -Value $ymlText -Encoding UTF8
+          Write-Host "Installer: $($installer.FullName)"
+          Write-Host "Blockmap: $($blockmap.FullName)"
+          Write-Host "Metadata: release/latest.yml"
+
+      - name: Ensure GitHub draft release exists
+        if: steps.release_gate.outputs.should_build == 'true' && steps.release_gate.outputs.should_publish == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run desktop:release
+        run: |
+          $tag = '${{ steps.release_gate.outputs.tag }}'
+          $version = '${{ steps.release_gate.outputs.version }}'
+          gh release create $tag --repo $env:GITHUB_REPOSITORY --draft --title "Video Hub $version" --target $env:GITHUB_SHA
 
-      - name: Publish stable GitHub Release
-        if: steps.release_gate.outputs.finalize_release == 'true'
+      - name: Upload Windows updater assets
+        if: steps.release_gate.outputs.should_build == 'true' && steps.release_gate.outputs.should_publish == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = '${{ steps.release_gate.outputs.tag }}'
+          $installer = Get-ChildItem release -Filter 'Video-Hub-Setup-*.exe' -File | Where-Object { $_.Name -notlike '*uninstaller*' } | Select-Object -First 1
+          $blockmap = [System.IO.FileInfo]("$($installer.FullName).blockmap")
+          gh release upload $tag $installer.FullName $blockmap.FullName 'release/latest.yml' --repo $env:GITHUB_REPOSITORY --clobber
+
+      - name: Finalize stable GitHub Release
+        if: steps.release_gate.outputs.should_build == 'true' && steps.release_gate.outputs.should_publish == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -126,27 +170,21 @@ jobs:
           $version = '${{ steps.release_gate.outputs.version }}'
           gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --prerelease=false --title "Video Hub $version"
 
-      - name: Verify published release assets
-        if: steps.release_gate.outputs.should_release == 'true'
+      - name: Verify published release
+        if: steps.release_gate.outputs.should_build == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = '${{ steps.release_gate.outputs.tag }}'
-          $releaseState = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft,isPrerelease
-          Write-Host "Release state: $releaseState"
-
-          if ($releaseState -match '"isDraft":true') { throw "Release is still draft." }
-          if ($releaseState -match '"isPrerelease":true') { throw "Release is prerelease." }
-
-          $assets = gh release view $tag --repo $env:GITHUB_REPOSITORY --json assets --jq '.assets[].name'
-          Write-Host "Published assets:"
-          $assets | ForEach-Object { Write-Host " - $_" }
-
-          if ($assets -notmatch 'latest\.yml') { throw "latest.yml was not published." }
-          if ($assets -notmatch 'Setup.*\.exe$') { throw "Windows NSIS installer was not published." }
-          if ($assets -notmatch 'Setup.*\.exe\.blockmap$') { throw "NSIS blockmap was not published." }
+          $release = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft,isPrerelease,assets | ConvertFrom-Json
+          if ($release.isDraft) { throw 'Release is still draft.' }
+          if ($release.isPrerelease) { throw 'Release is prerelease.' }
+          $assets = @($release.assets | ForEach-Object { $_.name })
+          $required = @('latest.yml', 'Video-Hub-Setup-${{ steps.release_gate.outputs.version }}.exe', 'Video-Hub-Setup-${{ steps.release_gate.outputs.version }}.exe.blockmap')
+          foreach ($name in $required) { if ($assets -notcontains $name) { throw "Missing release asset: $name" } }
+          Write-Host "Verified release $tag with required updater assets."
 
       - name: Release skipped
-        if: steps.release_gate.outputs.should_release != 'true'
-        run: echo "Current package version already has a complete GitHub Release. No new installer was built."
+        if: steps.release_gate.outputs.should_build != 'true'
+        run: echo "Current package version already has a complete stable GitHub Release."
