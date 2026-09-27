@@ -45,17 +45,24 @@ jobs:
           $tag = "v$version"
           Write-Host "Release candidate: $tag"
 
-          $existingTags = gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName --jq '.[].tagName'
-          if ($existingTags -contains $tag) {
-            Write-Host "Release $tag already exists. No new desktop build is required."
-            "should_release=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-            exit 0
-          }
+          $existing = gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName,isDraft | ConvertFrom-Json
+          $match = $existing | Where-Object { $_.tagName -eq $tag } | Select-Object -First 1
 
-          Write-Host "Release $tag does not exist. Building and publishing it."
-          "should_release=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if ($match) {
+            if ($match.isDraft) {
+              Write-Host "Draft release $tag exists. Resuming artifact publication and finalizing it."
+              "should_release=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              "finalize_release=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            } else {
+              Write-Host "Published release $tag already exists. No new desktop build is required."
+              "should_release=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+              "finalize_release=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            }
+          } else {
+            Write-Host "Release $tag does not exist. Building and publishing it."
+            "should_release=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "finalize_release=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
@@ -102,6 +109,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run desktop:release
 
+      - name: Publish stable GitHub Release
+        if: steps.release_gate.outputs.finalize_release == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = '${{ steps.release_gate.outputs.tag }}'
+          $version = '${{ steps.release_gate.outputs.version }}'
+          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --prerelease=false --title "Video Hub $version"
       - name: Verify published release assets
         if: steps.release_gate.outputs.should_release == 'true'
         shell: pwsh
