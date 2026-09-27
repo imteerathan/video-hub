@@ -94,7 +94,7 @@
         "provider": "github",
         "owner": "imteerathan",
         "repo": "video-hub",
-        "releaseType": "release",
+        "releaseType": "draft",
         "publishAutoUpdate": true,
         "vPrefixedTagName": true
       }
