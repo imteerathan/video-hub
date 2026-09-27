@@ -26,10 +26,6 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Enable required npm install scripts
-        shell: pwsh
-        run: npm install-scripts approve @prisma/client prisma @prisma/engines electron electron-winstaller
-
       - name: Verify updater dependency
         shell: pwsh
         run: node -e "const u=require('electron-updater'); if(!u.NsisUpdater) throw new Error('electron-updater NsisUpdater export is missing'); console.log('electron-updater:', require('electron-updater/package.json').version)"
