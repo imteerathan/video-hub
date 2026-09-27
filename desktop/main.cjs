@@ -330,8 +330,14 @@ async function createAutoUpdater() {
     return;
   }
   if (updater) return;
+
   const config = getUpdateConfig();
-  setUpdateState({ configured: config.configured, channel: config.channel, currentVersion: app.getVersion() });
+  setUpdateState({
+    configured: config.configured,
+    channel: config.displayChannel || config.channel || 'stable',
+    currentVersion: app.getVersion(),
+  });
+
   if (!config.configured) {
     setUpdateState({ status: 'unconfigured', checkedAt: null });
     log('[updater] update channel is not configured');
@@ -340,12 +346,20 @@ async function createAutoUpdater() {
 
   try {
     const { NsisUpdater } = require('electron-updater');
-    updater = new NsisUpdater({ provider: 'generic', url: config.url });
+    updater = new NsisUpdater({
+      provider: config.provider,
+      owner: config.owner,
+      repo: config.repo,
+      channel: config.channel || 'latest',
+    });
+
     updater.autoDownload = true;
     updater.autoInstallEvent = 'onNextLaunch';
     updater.allowDowngrade = false;
+    updater.allowPrerelease = false;
     updater.autoRunAppAfterInstall = true;
     if ('disableWebInstaller' in updater) updater.disableWebInstaller = true;
+
     updater.logger = {
       info: (...args) => log('[updater]', ...args),
       warn: (...args) => log('[updater:warn]', ...args),
@@ -353,26 +367,89 @@ async function createAutoUpdater() {
       debug: (...args) => log('[updater:debug]', ...args),
     };
 
-    updater.on('checking-for-update', () => setUpdateState({ status: 'checking', error: null, readyToInstall: false }));
+    updater.on('checking-for-update', () => setUpdateState({
+      status: 'checking',
+      error: null,
+      checkedAt: new Date().toISOString(),
+      readyToInstall: false,
+    }));
+
     updater.on('update-available', info => {
-      log('[updater] update available', { version: info.version });
-      setUpdateState({ status: 'downloading', availableVersion: info.version, percent: 0, error: null, readyToInstall: false });
+      log('[updater] update available', {
+        currentVersion: app.getVersion(),
+        version: info.version,
+        releaseDate: info.releaseDate,
+      });
+      setUpdateState({
+        status: 'downloading',
+        availableVersion: info.version,
+        percent: 0,
+        transferredBytes: 0,
+        totalBytes: 0,
+        bytesPerSecond: 0,
+        error: null,
+        readyToInstall: false,
+      });
     });
+
     updater.on('update-not-available', info => {
-      setUpdateState({ status: 'up-to-date', availableVersion: info?.version || null, percent: 0, error: null, readyToInstall: false, checkedAt: new Date().toISOString() });
+      setUpdateState({
+        status: 'up-to-date',
+        availableVersion: info?.version || null,
+        percent: 0,
+        transferredBytes: 0,
+        totalBytes: 0,
+        bytesPerSecond: 0,
+        error: null,
+        readyToInstall: false,
+        checkedAt: new Date().toISOString(),
+      });
     });
+
     updater.on('download-progress', progress => {
-      setUpdateState({ status: 'downloading', percent: Math.max(0, Math.min(100, Number(progress.percent) || 0)), transferredBytes: Number(progress.transferred) || 0, totalBytes: Number(progress.total) || 0, bytesPerSecond: Number(progress.bytesPerSecond) || 0 });
+      setUpdateState({
+        status: 'downloading',
+        percent: Math.max(0, Math.min(100, Number(progress.percent) || 0)),
+        transferredBytes: Number(progress.transferred) || 0,
+        totalBytes: Number(progress.total) || 0,
+        bytesPerSecond: Number(progress.bytesPerSecond) || 0,
+      });
     });
+
     updater.on('update-downloaded', info => {
-      log('[updater] update downloaded', { version: info.version });
-      setUpdateState({ status: 'ready', availableVersion: info.version, percent: 100, error: null, readyToInstall: true, checkedAt: new Date().toISOString() });
+      log('[updater] update downloaded and verified', {
+        version: info.version,
+        downloadedFile: info.downloadedFile,
+      });
+      setUpdateState({
+        status: 'ready',
+        availableVersion: info.version,
+        percent: 100,
+        error: null,
+        readyToInstall: true,
+        checkedAt: new Date().toISOString(),
+      });
     });
+
     updater.on('error', error => {
       log('[updater] error', error?.stack || error);
-      setUpdateState({ status: 'error', error: error?.message || String(error), checkedAt: new Date().toISOString() });
+      setUpdateState({
+        status: 'error',
+        error: error?.message || String(error),
+        checkedAt: new Date().toISOString(),
+        readyToInstall: false,
+      });
     });
-    log('[updater] initialized', { provider: config.provider, url: config.url, currentVersion: app.getVersion() });
+
+    log('[updater] initialized', {
+      provider: config.provider,
+      owner: config.owner,
+      repo: config.repo,
+      channel: config.channel,
+      currentVersion: app.getVersion(),
+      autoDownload: updater.autoDownload,
+      autoInstallEvent: updater.autoInstallEvent,
+    });
 
     try {
       if (typeof updater.installPendingUpdateIfAvailable === 'function') {
@@ -383,7 +460,11 @@ async function createAutoUpdater() {
     }
   } catch (error) {
     log('[updater] initialization failed', error?.stack || error);
-    setUpdateState({ status: 'error', error: error?.message || String(error), checkedAt: new Date().toISOString() });
+    setUpdateState({
+      status: 'error',
+      error: error?.message || String(error),
+      checkedAt: new Date().toISOString(),
+    });
   }
 }
 
@@ -486,7 +567,9 @@ if (!gotLock) {
       userData = app.getPath('userData');
       fs.mkdirSync(userData, { recursive: true });
       log('[startup] app ready', { userData, packaged: app.isPackaged, version: app.getVersion() });
-      await createAutoUpdater();
+      if (!smokeHttp && !smokeUi) {
+        await createAutoUpdater();
+      }
 
       if (!smokeHttp) {
         await createSplashWindow();

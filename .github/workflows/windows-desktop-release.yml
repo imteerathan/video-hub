@@ -1,0 +1,93 @@
+name: Windows Desktop Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package.json
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Validate release tag matches package version
+        shell: pwsh
+        run: |
+          $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          $packageVersion = node -p "require('./package.json').version"
+          Write-Host "Git tag: $tagVersion"
+          Write-Host "Package version: $packageVersion"
+          if ($tagVersion -ne $packageVersion) {
+            throw "Release tag v$tagVersion does not match package.json version $packageVersion"
+          }
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Build Next.js
+        run: npm run build
+
+      - name: Prepare Prisma artifacts for standalone runtime
+        run: npm run desktop:prepare
+
+      - name: Desktop smoke test
+        shell: pwsh
+        run: npx electron desktop/main.cjs --smoke-test
+
+      - name: Publish Windows release to GitHub
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win nsis --publish always
+
+      - name: Verify published release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $assets = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft,isPrerelease,assets --jq '.assets[].name'
+          Write-Host "Published assets:"
+          $assets | ForEach-Object { Write-Host " - $_" }
+
+          if ($assets -notmatch 'latest\.yml') {
+            throw "latest.yml was not published. Electron updater feed is incomplete."
+          }
+          if ($assets -notmatch 'Setup.*\.exe$') {
+            throw "Windows NSIS installer was not published."
+          }
+          if ($assets -notmatch 'Setup.*\.exe\.blockmap$') {
+            throw "NSIS blockmap was not published."
+          }
+
+          $releaseState = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft,isPrerelease
+          Write-Host "Release state: $releaseState"
+          if ($releaseState -match '"isDraft":true') {
+            throw "Release is still draft; public updater clients cannot reliably consume draft releases."
+          }
+          if ($releaseState -match '"isPrerelease":true') {
+            throw "Release is prerelease; stable Video Hub clients must receive stable releases only."
+          }
