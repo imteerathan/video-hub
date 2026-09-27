@@ -31,7 +31,7 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
-            const tag = 'v1.1.15';
+            const tag = 'v1.1.16';
             const sha = context.sha;
             try {
               const existing = await github.rest.git.getRef({
