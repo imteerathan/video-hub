@@ -120,6 +120,23 @@ export async function scanSource(sourceId: string, userId: string) {
           const existing = await db.videoSource.findFirst({ where: { fingerprint: fp } });
 
           if (existing) {
+            await db.videoSource.update({
+              where: { id: existing.id },
+              data: {
+                title,
+                sourceTitle: title,
+                thumbnailUrl: v.thumbnailUrl || existing.thumbnailUrl || undefined,
+                duration: v.duration || existing.duration || undefined,
+                resolution: v.resolution || existing.resolution || undefined,
+                publishedAt: publishedAt || existing.publishedAt || undefined,
+              },
+            }).catch(() => {});
+            if (existing.contentId && v.thumbnailUrl) {
+              await db.content.updateMany({
+                where: { id: existing.contentId, userId, posterUrl: null },
+                data: { posterUrl: v.thumbnailUrl },
+              }).catch(() => {});
+            }
             duplicates++;
           } else {
             const parsed = parseEpisodeTitle(title);
@@ -129,7 +146,12 @@ export async function scanSource(sourceId: string, userId: string) {
               source.categories.map((x) => x.category.name),
               !!parsed,
             );
-            let content = await db.content.findFirst({ where: { userId, normalized } });
+            // Series and movies are title-level entities. Plain clips are media-level
+            // entities so 40 discovered clips do not collapse into one Content card.
+            let content =
+              inferredType === 'CLIP'
+                ? null
+                : await db.content.findFirst({ where: { userId, normalized } });
             const wasNew = !content;
 
             if (!content) {
@@ -159,8 +181,14 @@ export async function scanSource(sourceId: string, userId: string) {
                   posterUrl: content.posterUrl || v.thumbnailUrl || undefined,
                 },
               });
+            } else if (content && v.thumbnailUrl && !content.posterUrl) {
+              content = await db.content.update({
+                where: { id: content.id },
+                data: { posterUrl: v.thumbnailUrl },
+              });
             }
 
+            if (!content) throw new Error('Failed to create content record for discovered media');
             let episodeId: string | undefined;
             if (parsed) {
               const season = await db.season.upsert({
