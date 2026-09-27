@@ -75,8 +75,8 @@ jobs:
         run: |
           $cfg = Get-Content desktop/update-config.cjs -Raw
           if ($cfg -notmatch "provider: 'github'") { throw "Desktop updater provider is not GitHub." }
-          if ($cfg -notmatch "owner: 'imteerathan'") { throw "Desktop updater owner is incorrect." }
-          if ($cfg -notmatch "repo: 'video-hub'") { throw "Desktop updater repo is incorrect." }
+          if ($cfg -notmatch "GITHUB_OWNER = 'imteerathan'") { throw "Desktop updater owner is incorrect." }
+          if ($cfg -notmatch "GITHUB_REPO = 'video-hub'") { throw "Desktop updater repo is incorrect." }
 
       - name: Generate Prisma Client
         if: steps.release_gate.outputs.should_release == 'true'
