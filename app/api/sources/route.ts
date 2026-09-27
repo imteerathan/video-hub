@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { assertSafeUrl } from '@/lib/security';
+import { scanSource } from '@/lib/scanner';
 const WINDOWS=[7,15,30];
 
 async function validCategories(userId:string, ids:unknown){
@@ -39,7 +40,10 @@ export async function POST(req:Request){
         categories:{create:valid.map(c=>({categoryId:c.id}))}
       }
     });
-    return NextResponse.json(source,{status:201});
+    // Auto-scan immediately after a successful Source create. The local Electron server
+    // keeps the scan running in the background while the UI remains responsive.
+    void scanSource(source.id, user.id).catch(() => {});
+    return NextResponse.json({ ...source, autoScanStarted: true }, { status: 201, headers: { 'Cache-Control': 'no-store' } });
   }catch(e){
     return NextResponse.json({error:e instanceof Error?e.message:'Failed'},{status:400});
   }
