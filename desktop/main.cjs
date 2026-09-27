@@ -1,4 +1,5 @@
-const { app, BrowserWindow, session, shell } = require('electron');
+const { app, BrowserWindow, session, shell, ipcMain } = require('electron');
+const { getUpdateConfig } = require('./update-config.cjs');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -290,6 +291,135 @@ async function showSplashError(error) {
   } catch (fallbackError) { bootstrapLog('[startup-error-window-failed]', fallbackError); }
 }
 
+let updater = null;
+let updateInterval = null;
+const updateState = {
+  status: 'idle',
+  currentVersion: null,
+  availableVersion: null,
+  percent: 0,
+  transferredBytes: 0,
+  totalBytes: 0,
+  bytesPerSecond: 0,
+  error: null,
+  checkedAt: null,
+  configured: false,
+  channel: 'stable',
+  readyToInstall: false,
+};
+
+function snapshotUpdateState() {
+  return { ...updateState };
+}
+
+function broadcastUpdateState() {
+  const state = snapshotUpdateState();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.webContents.send('update:state', state); } catch (err) { log('[updater:send]', err?.message || err); }
+  }
+}
+
+function setUpdateState(patch) {
+  Object.assign(updateState, patch, { currentVersion: app.getVersion() });
+  broadcastUpdateState();
+}
+
+async function createAutoUpdater() {
+  if (!app.isPackaged) {
+    setUpdateState({ status: 'development', configured: false, checkedAt: new Date().toISOString() });
+    return;
+  }
+  if (updater) return;
+  const config = getUpdateConfig();
+  setUpdateState({ configured: config.configured, channel: config.channel, currentVersion: app.getVersion() });
+  if (!config.configured) {
+    setUpdateState({ status: 'unconfigured', checkedAt: null });
+    log('[updater] update channel is not configured');
+    return;
+  }
+
+  try {
+    const { NsisUpdater } = require('electron-updater');
+    updater = new NsisUpdater({ provider: 'generic', url: config.url });
+    updater.autoDownload = true;
+    updater.autoInstallEvent = 'onNextLaunch';
+    updater.allowDowngrade = false;
+    updater.autoRunAppAfterInstall = true;
+    if ('disableWebInstaller' in updater) updater.disableWebInstaller = true;
+    updater.logger = {
+      info: (...args) => log('[updater]', ...args),
+      warn: (...args) => log('[updater:warn]', ...args),
+      error: (...args) => log('[updater:error]', ...args),
+      debug: (...args) => log('[updater:debug]', ...args),
+    };
+
+    updater.on('checking-for-update', () => setUpdateState({ status: 'checking', error: null, readyToInstall: false }));
+    updater.on('update-available', info => {
+      log('[updater] update available', { version: info.version });
+      setUpdateState({ status: 'downloading', availableVersion: info.version, percent: 0, error: null, readyToInstall: false });
+    });
+    updater.on('update-not-available', info => {
+      setUpdateState({ status: 'up-to-date', availableVersion: info?.version || null, percent: 0, error: null, readyToInstall: false, checkedAt: new Date().toISOString() });
+    });
+    updater.on('download-progress', progress => {
+      setUpdateState({ status: 'downloading', percent: Math.max(0, Math.min(100, Number(progress.percent) || 0)), transferredBytes: Number(progress.transferred) || 0, totalBytes: Number(progress.total) || 0, bytesPerSecond: Number(progress.bytesPerSecond) || 0 });
+    });
+    updater.on('update-downloaded', info => {
+      log('[updater] update downloaded', { version: info.version });
+      setUpdateState({ status: 'ready', availableVersion: info.version, percent: 100, error: null, readyToInstall: true, checkedAt: new Date().toISOString() });
+    });
+    updater.on('error', error => {
+      log('[updater] error', error?.stack || error);
+      setUpdateState({ status: 'error', error: error?.message || String(error), checkedAt: new Date().toISOString() });
+    });
+    log('[updater] initialized', { provider: config.provider, url: config.url, currentVersion: app.getVersion() });
+
+    try {
+      if (typeof updater.installPendingUpdateIfAvailable === 'function') {
+        await updater.installPendingUpdateIfAvailable();
+      }
+    } catch (error) {
+      log('[updater] pending install check failed', error?.stack || error);
+    }
+  } catch (error) {
+    log('[updater] initialization failed', error?.stack || error);
+    setUpdateState({ status: 'error', error: error?.message || String(error), checkedAt: new Date().toISOString() });
+  }
+}
+
+async function checkForUpdates() {
+  if (!app.isPackaged) {
+    setUpdateState({ status: 'development', checkedAt: new Date().toISOString() });
+    return snapshotUpdateState();
+  }
+  if (!updater) await createAutoUpdater();
+  if (!updater) return snapshotUpdateState();
+  try {
+    setUpdateState({ status: 'checking', error: null, checkedAt: new Date().toISOString() });
+    await updater.checkForUpdates();
+  } catch (error) {
+    log('[updater] check failed', error?.stack || error);
+    setUpdateState({ status: 'error', error: error?.message || String(error), checkedAt: new Date().toISOString() });
+  }
+  return snapshotUpdateState();
+}
+
+async function installUpdateNow() {
+  if (!updater || !updateState.readyToInstall) return { ...snapshotUpdateState(), installed: false };
+  setUpdateState({ status: 'installing' });
+  updater.quitAndInstall({ isSilent: true, isForceRunAfter: true });
+  return { ...snapshotUpdateState(), installed: true };
+}
+
+ipcMain.handle('app:get-version', () => app.getVersion());
+ipcMain.handle('update:get-state', () => snapshotUpdateState());
+ipcMain.handle('update:check', () => checkForUpdates());
+ipcMain.handle('update:install', () => installUpdateNow());
+ipcMain.handle('update:open-log', () => {
+  shell.openPath(logPath()).catch(error => log('[updater] open-log failed', error));
+  return logPath();
+});
+
 function createMainWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
   mainWindow = new BrowserWindow({
@@ -355,7 +485,8 @@ if (!gotLock) {
       session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
       userData = app.getPath('userData');
       fs.mkdirSync(userData, { recursive: true });
-      log('[startup] app ready', { userData, packaged: app.isPackaged });
+      log('[startup] app ready', { userData, packaged: app.isPackaged, version: app.getVersion() });
+      await createAutoUpdater();
 
       if (!smokeHttp) {
         await createSplashWindow();
@@ -394,6 +525,10 @@ if (!gotLock) {
       }
 
       await new Promise(resolve => setTimeout(resolve, 250));
+      if (app.isPackaged && updater) {
+        setTimeout(() => checkForUpdates().catch(error => log('[updater] startup check failed', error)), 20000);
+        updateInterval = setInterval(() => checkForUpdates().catch(error => log('[updater] periodic check failed', error)), 6 * 60 * 60 * 1000);
+      }
       await closeSplash();
       app.on('activate', async () => {
         if (BrowserWindow.getAllWindows().length === 0) await createMainWindow().loadURL('http://127.0.0.1:' + PORT + '/');
@@ -416,5 +551,5 @@ if (!gotLock) {
   app.on('child-process-gone', (_event, details) => log('[app] child-process-gone', details));
   app.on('browser-window-created', (_event, window) => log('[app] browser-window-created', { id: window.id }));
   app.on('window-all-closed', () => { stopServer(); if (process.platform !== 'darwin') app.quit(); });
-  app.on('before-quit', stopServer);
+  app.on('before-quit', () => { if (updateInterval) clearInterval(updateInterval); stopServer(); });
 }
