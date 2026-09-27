@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { db } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
+import ClipThumbnail from './ClipThumbnail';
 
 function languageBadges(tracks: {kind:string; languageCode:string|null; languageLabel:string}[]) {
   const audio = Array.from(new Map(tracks.filter(t=>t.kind==='AUDIO').map(t=>[t.languageCode||t.languageLabel,t])).values());
@@ -44,6 +45,6 @@ export default async function Library(){
       {c.seasons.map((s:any)=><div className="episode-strip" key={s.id}><span>Season {s.number}</span>{s.episodes.sort((a:any,b:any)=>a.number-b.number).slice(0,8).map((e:any)=><Link key={e.id} href={`/watch/${e.id}`}>E{e.number}</Link>)}</div>)}
     </article>
   })}{!seriesAndMovies.length&&<div className="empty">No movies or series yet.</div>}</div></section>
-  <section className="rail"><div className="section-head"><h2>Video Clips</h2><span className="muted">{clips.length}</span></div><div className="rail-grid">{clips.map(c=>{const v=c.sources[0];return <Link className="poster-card" key={c.id} href={v?`/watch/source/${v.id}`:`#${c.id}`}><div className="clip-thumb">{v?.thumbnailUrl?<img className="poster-img" src={v.thumbnailUrl} alt="" loading="lazy"/>:<div className="poster-fallback">▶</div>}</div><div className="poster-meta"><strong>{title(c)}</strong><span>{v?.siteName||'Video'}</span></div></Link>})}{!clips.length&&<div className="empty">No clips yet.</div>}</div></section>
+  <section className="rail"><div className="section-head"><h2>Video Clips</h2><span className="muted">{clips.length}</span></div><div className="rail-grid">{clips.map(c=>{const v=c.sources[0];return <Link className="poster-card" key={c.id} href={v?`/watch/source/${v.id}`:`#${c.id}`}><ClipThumbnail src={v?.url} type={v?.type} thumbnail={v?.thumbnailUrl} /><div className="poster-meta"><strong>{title(c)}</strong><span>{v?.siteName||'Video'}</span></div></Link>})}{!clips.length&&<div className="empty">No clips yet.</div>}</div></section>
  </main>
 }
