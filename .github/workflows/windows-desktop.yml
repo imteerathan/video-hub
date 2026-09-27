@@ -14,17 +14,42 @@ jobs:
     timeout-minutes: 35
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: package.json
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
+
+      - name: Create release tag
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const tag = 'v1.1.15';
+            const sha = context.sha;
+            try {
+              const existing = await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: 'tags/' + tag
+              });
+              core.info('Release tag already exists: ' + existing.data.object.sha);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.git.createRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: 'refs/tags/' + tag,
+                sha
+              });
+              core.info('Created release tag ' + tag + ' at ' + sha);
+            }
 
       - name: Verify updater dependency
         shell: pwsh
